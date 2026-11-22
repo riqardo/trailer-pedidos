@@ -1,0 +1,25 @@
+{
+  "name": "trailer-pedidos",
+  "version": "1.0.0",
+  "private": true,
+  "description": "API REST e aplicação web para registro e gerenciamento de pedidos de um trailer de cachorro-quente",
+  "type": "module",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js"
+  },
+  "engines": {
+    "node": ">=20.19.0"
+  },
+  "dependencies": {
+    "bcryptjs": "^3.0.3",
+    "dotenv": "^18.0.10",
+    "express": "^5.3.0",
+    "js-yaml": "^5.5.0",
+    "jsonwebtoken": "^9.0.3",
+    "mongodb-memory-server": "^11.3.0",
+    "mongoose": "^9.12.3",
+    "swagger-ui-express": "^5.0.1"
+  }
+}

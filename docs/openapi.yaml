@@ -1,0 +1,871 @@
+openapi: 3.0.3
+info:
+  title: Trailer do Bigode — API de Pedidos
+  version: 1.0.0
+  description: |
+    API REST para registro e gerenciamento dos pedidos de um trailer de cachorro-quente.
+
+    **Funcionalidades:** login de atendentes, consulta ao cardápio, registro/alteração
+    de pedidos e finalização com pagamento simulado (dinheiro, Pix ou cartão).
+
+    **Regras de negócio aplicadas pela API:**
+    1. Produtos indisponíveis não podem ser adicionados a pedidos.
+    2. Pagamentos em dinheiro recebem 10% de desconto sobre o subtotal.
+    3. Um pedido só pode ser finalizado se possuir pelo menos um produto.
+    4. O pedido só é finalizado depois do pagamento (simulado).
+    5. Pedidos finalizados são somente leitura.
+    6. Todo pedido exige nome do cliente e local (mesa, placa ou balcão).
+    7. Toda consulta ou alteração registra o atendente responsável (histórico + auditoria).
+
+    **Autenticação:** envie `Authorization: Bearer <token>` obtido em `/api/auth/login`.
+  contact:
+    name: Trailer do Bigode
+servers:
+  - url: http://localhost:3000
+    description: Ambiente local
+tags:
+  - name: Autenticação
+    description: Login e identificação do atendente.
+  - name: Produtos
+    description: Consulta ao cardápio.
+  - name: Pedidos
+    description: Registro, consulta, alteração e finalização de pedidos.
+  - name: Sistema
+    description: Verificação de disponibilidade da API.
+
+security:
+  - bearerAuth: []
+
+paths:
+  /api/health:
+    get:
+      tags: [Sistema]
+      summary: Verifica se a API está no ar
+      security: []
+      responses:
+        "200":
+          description: API disponível
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Health"
+
+  /api/auth/login:
+    post:
+      tags: [Autenticação]
+      summary: Realiza o login do atendente
+      description: Retorna um token JWT válido por 12 horas (padrão).
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LoginRequest"
+            example:
+              username: ana
+              password: ana123
+      responses:
+        "200":
+          description: Login realizado
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuthResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          description: Usuário ou senha inválidos
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error:
+                  code: UNAUTHORIZED
+                  message: Usuário ou senha inválidos.
+
+  /api/auth/me:
+    get:
+      tags: [Autenticação]
+      summary: Retorna o atendente autenticado
+      responses:
+        "200":
+          description: Atendente autenticado
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  user:
+                    $ref: "#/components/schemas/User"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /api/products:
+    get:
+      tags: [Produtos]
+      summary: Consulta o cardápio
+      description: Lista os produtos cadastrados. Pode ser filtrada por disponibilidade e categoria.
+      parameters:
+        - in: query
+          name: available
+          schema:
+            type: boolean
+          description: Filtra somente produtos disponíveis (true) ou indisponíveis (false).
+        - in: query
+          name: category
+          schema:
+            type: string
+            enum: [lanche, bebida]
+          description: Filtra por categoria.
+      responses:
+        "200":
+          description: Lista de produtos
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  products:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Product"
+                  meta:
+                    type: object
+                    properties:
+                      total:
+                        type: integer
+                        example: 10
+              example:
+                products:
+                  - id: 66f1a2b3c4d5e6f7a8b9c0d1
+                    name: Hot Dog Clássico
+                    description: Pão macio, salsicha, molho especial da casa e batata palha.
+                    category: lanche
+                    price: 14.9
+                    available: true
+                    icon: "🌭"
+                    sortOrder: 1
+                  - id: 66f1a2b3c4d5e6f7a8b9c0d2
+                    name: Água Mineral 500ml
+                    description: Água mineral sem gás. Estoque esgotado.
+                    category: bebida
+                    price: 4
+                    available: false
+                    icon: "💧"
+                    sortOrder: 10
+                meta:
+                  total: 10
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /api/orders:
+    get:
+      tags: [Pedidos]
+      summary: Consulta pedidos registrados
+      description: |
+        Lista os pedidos com filtros opcionais. **Toda consulta é registrada na auditoria
+        com o atendente autenticado** (regra 7).
+      parameters:
+        - in: query
+          name: status
+          schema:
+            type: string
+            enum: [open, finalized, all]
+            default: all
+          description: Status do pedido.
+        - in: query
+          name: search
+          schema:
+            type: string
+          description: Busca por nome do cliente, identificação do local ou número do pedido.
+        - in: query
+          name: locationType
+          schema:
+            type: string
+            enum: [mesa, placa, balcao]
+          description: Filtra pelo tipo de local.
+        - in: query
+          name: page
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+        - in: query
+          name: limit
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+            default: 100
+      responses:
+        "200":
+          description: Pedidos encontrados
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OrdersResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+    post:
+      tags: [Pedidos]
+      summary: Registra um novo pedido
+      description: |
+        Cria um pedido em aberto. O pedido exige nome do cliente e local.
+        Produtos indisponíveis são recusados (regra 1). O atendente autenticado fica
+        registrado como criador. É permitido criar um pedido sem itens e adicioná-los
+        depois; porém, ele não poderá ser finalizado enquanto estiver vazio (regra 3).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateOrderRequest"
+            example:
+              customerName: Maria Oliveira
+              location:
+                type: mesa
+                label: "7"
+              items:
+                - productId: 66f1a2b3c4d5e6f7a8b9c0d2
+                  quantity: 2
+                - productId: 66f1a2b3c4d5e6f7a8b9c0d8
+                  quantity: 1
+      responses:
+        "201":
+          description: Pedido registrado
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OrderResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          description: Produto não encontrado
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: Produto indisponível
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error:
+                  code: PRODUCT_UNAVAILABLE
+                  message: O produto "Água Mineral 500ml" está indisponível e não pode ser adicionado.
+                  details:
+                    productId: 66f1a2b3c4d5e6f7a8b9c0d10
+                    productName: Água Mineral 500ml
+        "422":
+          $ref: "#/components/responses/ValidationError"
+
+  /api/orders/{id}:
+    parameters:
+      - $ref: "#/components/parameters/OrderId"
+    get:
+      tags: [Pedidos]
+      summary: Consulta um pedido pelo ID
+      description: Retorna o pedido com seu histórico. **A consulta registra o atendente** (regra 7).
+      responses:
+        "200":
+          description: Pedido encontrado
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OrderResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    patch:
+      tags: [Pedidos]
+      summary: Altera um pedido em aberto
+      description: |
+        Atualiza nome do cliente, local e/ou a lista completa de itens. Somente pedidos
+        em aberto podem ser alterados (regra 5). A alteração registra o atendente (regra 7).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateOrderRequest"
+            example:
+              customerName: Maria Oliveira
+              location:
+                type: placa
+                label: XYZ-9A87
+              items:
+                - productId: 66f1a2b3c4d5e6f7a8b9c0d2
+                  quantity: 3
+      responses:
+        "200":
+          description: Pedido alterado
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OrderResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: Pedido finalizado ou produto indisponível
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+
+  /api/orders/{id}/items:
+    parameters:
+      - $ref: "#/components/parameters/OrderId"
+    post:
+      tags: [Pedidos]
+      summary: Adiciona um item ao pedido
+      description: Adiciona uma quantidade de um produto disponível. Se o produto já estiver no pedido, soma à quantidade existente.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AddItemRequest"
+            example:
+              productId: 66f1a2b3c4d5e6f7a8b9c0d8
+              quantity: 2
+      responses:
+        "201":
+          description: Item adicionado
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OrderResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: Pedido finalizado ou produto indisponível
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+
+  /api/orders/{id}/items/{productId}:
+    parameters:
+      - $ref: "#/components/parameters/OrderId"
+      - in: path
+        name: productId
+        required: true
+        schema:
+          type: string
+        description: ID do produto no pedido.
+    patch:
+      tags: [Pedidos]
+      summary: Altera a quantidade de um item
+      description: Define uma nova quantidade (1 a 99) para o item. Somente pedidos em aberto.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateQuantityRequest"
+            example:
+              quantity: 3
+      responses:
+        "200":
+          description: Quantidade alterada
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OrderResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: Pedido finalizado
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+    delete:
+      tags: [Pedidos]
+      summary: Remove um item do pedido
+      description: Remove o produto do pedido em aberto.
+      responses:
+        "200":
+          description: Item removido
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OrderResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: Pedido finalizado
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/orders/{id}/finalize:
+    parameters:
+      - $ref: "#/components/parameters/OrderId"
+    post:
+      tags: [Pedidos]
+      summary: Finaliza o pedido após o pagamento
+      description: |
+        Registra o pagamento (simulado — não há integração real) e finaliza o pedido.
+        A API calcula o subtotal e, para **dinheiro**, aplica 10% de desconto.
+        O pedido precisa ter pelo menos um item (regra 3) e não pode já estar finalizado.
+        O atendente que finalizou fica registrado no pedido e na auditoria.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/FinalizeRequest"
+            examples:
+              dinheiro:
+                summary: Pagamento em dinheiro (10% de desconto)
+                value:
+                  paymentMethod: dinheiro
+              pix:
+                summary: Pagamento via Pix
+                value:
+                  paymentMethod: pix
+              cartao:
+                summary: Pagamento no cartão
+                value:
+                  paymentMethod: cartao
+      responses:
+        "200":
+          description: Pedido finalizado com pagamento registrado
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OrderResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: Pedido já finalizado
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error:
+                  code: ORDER_FINALIZED
+                  message: Este pedido já foi finalizado e está disponível apenas para consulta.
+        "422":
+          description: Pedido sem itens ou forma de pagamento inválida
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error:
+                  code: VALIDATION_ERROR
+                  message: Um pedido só pode ser finalizado se possuir pelo menos um produto.
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: Token obtido em POST /api/auth/login.
+
+  parameters:
+    OrderId:
+      in: path
+      name: id
+      required: true
+      schema:
+        type: string
+      description: ID do pedido.
+
+  responses:
+    BadRequest:
+      description: Requisição inválida
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    Unauthorized:
+      description: Autenticação necessária ou token inválido
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    NotFound:
+      description: Recurso não encontrado
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    ValidationError:
+      description: Dados inválidos
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          example:
+            error:
+              code: VALIDATION_ERROR
+              message: Informe o nome do cliente (mínimo de 2 caracteres).
+
+  schemas:
+    Health:
+      type: object
+      properties:
+        status:
+          type: string
+          example: ok
+        service:
+          type: string
+          example: trailer-do-bigode-api
+        timestamp:
+          type: string
+          format: date-time
+
+    LoginRequest:
+      type: object
+      required: [username, password]
+      properties:
+        username:
+          type: string
+          example: ana
+        password:
+          type: string
+          format: password
+          example: ana123
+
+    User:
+      type: object
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+          example: Ana Souza
+        username:
+          type: string
+          example: ana
+        role:
+          type: string
+          enum: [atendente, gerente]
+
+    AuthResponse:
+      type: object
+      properties:
+        token:
+          type: string
+        tokenType:
+          type: string
+          example: Bearer
+        expiresIn:
+          type: string
+          example: 12h
+        user:
+          $ref: "#/components/schemas/User"
+
+    Product:
+      type: object
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+          example: Hot Dog Completo
+        description:
+          type: string
+        category:
+          type: string
+          enum: [lanche, bebida]
+        price:
+          type: number
+          format: float
+          example: 19.9
+        available:
+          type: boolean
+          example: true
+        icon:
+          type: string
+          example: "🌭"
+        sortOrder:
+          type: integer
+
+    Location:
+      type: object
+      required: [type]
+      properties:
+        type:
+          type: string
+          enum: [mesa, placa, balcao]
+          description: Mesa, placa de identificação ou balcão (cliente em pé).
+        label:
+          type: string
+          description: Obrigatório para mesa e placa. Para balcão, a API define "Balcão".
+          example: "4"
+
+    OrderItemInput:
+      type: object
+      required: [productId, quantity]
+      properties:
+        productId:
+          type: string
+        quantity:
+          type: integer
+          minimum: 1
+          maximum: 99
+
+    OrderItem:
+      type: object
+      properties:
+        productId:
+          type: string
+        name:
+          type: string
+          example: Hot Dog Completo
+        category:
+          type: string
+          enum: [lanche, bebida]
+        unitPrice:
+          type: number
+          format: float
+          example: 19.9
+        quantity:
+          type: integer
+          example: 2
+        lineTotal:
+          type: number
+          format: float
+          example: 39.8
+
+    Attendant:
+      type: object
+      properties:
+        userId:
+          type: string
+        name:
+          type: string
+          example: Ana Souza
+        username:
+          type: string
+          example: ana
+
+    Payment:
+      type: object
+      properties:
+        method:
+          type: string
+          enum: [dinheiro, pix, cartao]
+        subtotal:
+          type: number
+          format: float
+        discount:
+          type: number
+          format: float
+          description: 10% do subtotal quando o pagamento é em dinheiro; 0 nos demais.
+        total:
+          type: number
+          format: float
+        paidAt:
+          type: string
+          format: date-time
+        processedBy:
+          $ref: "#/components/schemas/Attendant"
+        simulated:
+          type: boolean
+          description: Indica que o pagamento é simulado, sem integração real.
+
+    HistoryEntry:
+      type: object
+      properties:
+        action:
+          type: string
+          enum: [created, updated, viewed, item_added, item_updated, item_removed, finalized]
+        attendant:
+          $ref: "#/components/schemas/Attendant"
+        at:
+          type: string
+          format: date-time
+        details:
+          type: object
+          nullable: true
+
+    Order:
+      type: object
+      properties:
+        id:
+          type: string
+        number:
+          type: integer
+          example: 3
+        code:
+          type: string
+          example: "#0003"
+        customerName:
+          type: string
+          example: Maria Oliveira
+        location:
+          $ref: "#/components/schemas/Location"
+        status:
+          type: string
+          enum: [open, finalized]
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/OrderItem"
+        subtotal:
+          type: number
+          format: float
+          example: 45.8
+        discount:
+          type: number
+          format: float
+          example: 0
+        total:
+          type: number
+          format: float
+          example: 45.8
+        payment:
+          allOf:
+            - $ref: "#/components/schemas/Payment"
+          nullable: true
+        itemCount:
+          type: integer
+          example: 3
+        createdBy:
+          $ref: "#/components/schemas/Attendant"
+        updatedBy:
+          $ref: "#/components/schemas/Attendant"
+        finalizedBy:
+          allOf:
+            - $ref: "#/components/schemas/Attendant"
+          nullable: true
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+        history:
+          type: array
+          description: Presente nas consultas individuais, do evento mais recente para o mais antigo.
+          items:
+            $ref: "#/components/schemas/HistoryEntry"
+
+    CreateOrderRequest:
+      type: object
+      required: [customerName, location]
+      properties:
+        customerName:
+          type: string
+          minLength: 2
+          maxLength: 80
+        location:
+          $ref: "#/components/schemas/Location"
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/OrderItemInput"
+
+    UpdateOrderRequest:
+      type: object
+      minProperties: 1
+      properties:
+        customerName:
+          type: string
+          minLength: 2
+          maxLength: 80
+        location:
+          $ref: "#/components/schemas/Location"
+        items:
+          type: array
+          description: Substitui a lista completa de itens.
+          items:
+            $ref: "#/components/schemas/OrderItemInput"
+
+    AddItemRequest:
+      type: object
+      required: [productId, quantity]
+      properties:
+        productId:
+          type: string
+        quantity:
+          type: integer
+          minimum: 1
+          maximum: 99
+
+    UpdateQuantityRequest:
+      type: object
+      required: [quantity]
+      properties:
+        quantity:
+          type: integer
+          minimum: 1
+          maximum: 99
+
+    FinalizeRequest:
+      type: object
+      required: [paymentMethod]
+      properties:
+        paymentMethod:
+          type: string
+          enum: [dinheiro, pix, cartao]
+          description: Em dinheiro, a API aplica automaticamente 10% de desconto.
+
+    OrderResponse:
+      type: object
+      properties:
+        order:
+          $ref: "#/components/schemas/Order"
+
+    OrdersResponse:
+      type: object
+      properties:
+        orders:
+          type: array
+          items:
+            $ref: "#/components/schemas/Order"
+        meta:
+          type: object
+          properties:
+            total:
+              type: integer
+            page:
+              type: integer
+            limit:
+              type: integer
+            pages:
+              type: integer
+
+    Error:
+      type: object
+      properties:
+        error:
+          type: object
+          properties:
+            code:
+              type: string
+              example: VALIDATION_ERROR
+            message:
+              type: string
+              example: Informe o nome do cliente (mínimo de 2 caracteres).
+            details:
+              nullable: true
