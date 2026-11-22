@@ -1,12 +1,13 @@
 openapi: 3.0.3
 info:
   title: Trailer do Bigode — API de Pedidos
-  version: 1.0.0
+  version: 1.1.0
   description: |
     API REST para registro e gerenciamento dos pedidos de um trailer de cachorro-quente.
 
     **Funcionalidades:** login de atendentes, consulta ao cardápio, registro/alteração
-    de pedidos e finalização com pagamento simulado (dinheiro, Pix ou cartão).
+    de pedidos (com observações e adicionais por item) e finalização com pagamento simulado
+    (dinheiro, Pix ou cartão).
 
     **Regras de negócio aplicadas pela API:**
     1. Produtos indisponíveis não podem ser adicionados a pedidos.
@@ -14,7 +15,8 @@ info:
     3. Um pedido só pode ser finalizado se possuir pelo menos um produto.
     4. O pedido só é finalizado depois do pagamento (simulado).
     5. Pedidos finalizados são somente leitura.
-    6. Todo pedido exige nome do cliente e local (mesa, placa ou balcão).
+    6. Todo pedido exige nome do cliente e local (mesa, placa ou balcão); placa exige também
+       o modelo/marca/cor do veículo.
     7. Toda consulta ou alteração registra o atendente responsável (histórico + auditoria).
 
     **Autenticação:** envie `Authorization: Bearer <token>` obtido em `/api/auth/login`.
@@ -27,7 +29,7 @@ tags:
   - name: Autenticação
     description: Login e identificação do atendente.
   - name: Produtos
-    description: Consulta ao cardápio.
+    description: Consulta ao cardápio e aos adicionais disponíveis.
   - name: Pedidos
     description: Registro, consulta, alteração e finalização de pedidos.
   - name: Sistema
@@ -160,6 +162,38 @@ paths:
         "401":
           $ref: "#/components/responses/Unauthorized"
 
+  /api/addons:
+    get:
+      tags: [Produtos]
+      summary: Consulta os adicionais disponíveis
+      description: Lista os adicionais que podem ser incluídos em itens da categoria lanche, com preço atual.
+      responses:
+        "200":
+          description: Lista de adicionais
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  addons:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Addon"
+              example:
+                addons:
+                  - code: extra_salsicha
+                    name: Extra salsicha
+                    price: 4
+                    icon: "🌭"
+                    sortOrder: 1
+                  - code: extra_cheddar
+                    name: Extra cheddar
+                    price: 3.5
+                    icon: "🧀"
+                    sortOrder: 2
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
   /api/orders:
     get:
       tags: [Pedidos]
@@ -179,7 +213,7 @@ paths:
           name: search
           schema:
             type: string
-          description: Busca por nome do cliente, identificação do local ou número do pedido.
+          description: Busca por nome do cliente, identificação do local, veículo ou número do pedido.
         - in: query
           name: locationType
           schema:
@@ -230,6 +264,10 @@ paths:
               items:
                 - productId: 66f1a2b3c4d5e6f7a8b9c0d2
                   quantity: 2
+                  notes: Sem cebola
+                  addons:
+                    - code: extra_cheddar
+                      quantity: 1
                 - productId: 66f1a2b3c4d5e6f7a8b9c0d8
                   quantity: 1
       responses:
@@ -298,9 +336,14 @@ paths:
               location:
                 type: placa
                 label: XYZ-9A87
+                vehicle: Fiat Argo branco
               items:
                 - productId: 66f1a2b3c4d5e6f7a8b9c0d2
                   quantity: 3
+                  notes: Sem cebola e sem vinagrete
+                  addons:
+                    - code: extra_salsicha
+                      quantity: 1
       responses:
         "200":
           description: Pedido alterado
@@ -327,7 +370,10 @@ paths:
     post:
       tags: [Pedidos]
       summary: Adiciona um item ao pedido
-      description: Adiciona uma quantidade de um produto disponível. Se o produto já estiver no pedido, soma à quantidade existente.
+      description: |
+        Adiciona um item disponível com quantidade, observação e adicionais opcionais.
+        Itens com a mesma combinação de produto + observação + adicionais são agrupados;
+        combinações diferentes geram linhas separadas na comanda.
       requestBody:
         required: true
         content:
@@ -337,6 +383,12 @@ paths:
             example:
               productId: 66f1a2b3c4d5e6f7a8b9c0d8
               quantity: 2
+              notes: Sem cebola
+              addons:
+                - code: extra_salsicha
+                  quantity: 1
+                - code: extra_cheddar
+                  quantity: 2
       responses:
         "201":
           description: Item adicionado
@@ -357,30 +409,36 @@ paths:
         "422":
           $ref: "#/components/responses/ValidationError"
 
-  /api/orders/{id}/items/{productId}:
+  /api/orders/{id}/items/{itemId}:
     parameters:
       - $ref: "#/components/parameters/OrderId"
       - in: path
-        name: productId
+        name: itemId
         required: true
         schema:
           type: string
-        description: ID do produto no pedido.
+        description: ID da linha do item no pedido (campo `items[].id`).
     patch:
       tags: [Pedidos]
-      summary: Altera a quantidade de um item
-      description: Define uma nova quantidade (1 a 99) para o item. Somente pedidos em aberto.
+      summary: Altera quantidade, observação ou adicionais de um item
+      description: |
+        Atualiza a quantidade (1 a 99), a observação e/ou os adicionais de uma linha.
+        Somente pedidos em aberto. Adicionais são aceitos apenas em itens da categoria lanche.
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              $ref: "#/components/schemas/UpdateQuantityRequest"
+              $ref: "#/components/schemas/UpdateItemRequest"
             example:
               quantity: 3
+              notes: Sem cebola
+              addons:
+                - code: extra_cheddar
+                  quantity: 1
       responses:
         "200":
-          description: Quantidade alterada
+          description: Item alterado
           content:
             application/json:
               schema:
@@ -400,7 +458,7 @@ paths:
     delete:
       tags: [Pedidos]
       summary: Remove um item do pedido
-      description: Remove o produto do pedido em aberto.
+      description: Remove a linha do item do pedido em aberto.
       responses:
         "200":
           description: Item removido
@@ -621,6 +679,67 @@ components:
           type: string
           description: Obrigatório para mesa e placa. Para balcão, a API define "Balcão".
           example: "4"
+        vehicle:
+          type: string
+          maxLength: 80
+          nullable: true
+          description: Obrigatório quando type=placa. Descreve modelo, marca e/ou cor do veículo.
+          example: Fiat Uno prata
+
+    Addon:
+      type: object
+      properties:
+        code:
+          type: string
+          example: extra_cheddar
+        name:
+          type: string
+          example: Extra cheddar
+        price:
+          type: number
+          format: float
+          example: 3.5
+        icon:
+          type: string
+          example: "🧀"
+        sortOrder:
+          type: integer
+
+    AddonSelection:
+      type: object
+      required: [code]
+      properties:
+        code:
+          type: string
+          enum: [extra_salsicha, extra_cheddar, extra_bacon, ovo_frito]
+          example: extra_cheddar
+        quantity:
+          type: integer
+          minimum: 1
+          maximum: 10
+          default: 1
+          description: Quantidade do adicional nesta linha do item.
+
+    OrderItemAddon:
+      type: object
+      properties:
+        code:
+          type: string
+          example: extra_cheddar
+        name:
+          type: string
+          example: Extra cheddar
+        unitPrice:
+          type: number
+          format: float
+          example: 3.5
+        quantity:
+          type: integer
+          example: 1
+        lineTotal:
+          type: number
+          format: float
+          example: 3.5
 
     OrderItemInput:
       type: object
@@ -632,10 +751,24 @@ components:
           type: integer
           minimum: 1
           maximum: 99
+        notes:
+          type: string
+          maxLength: 160
+          nullable: true
+          description: Observação da linha, como "sem cebola".
+          example: Sem cebola
+        addons:
+          type: array
+          description: Adicionais da linha. Permitido apenas para produtos da categoria lanche.
+          items:
+            $ref: "#/components/schemas/AddonSelection"
 
     OrderItem:
       type: object
       properties:
+        id:
+          type: string
+          description: Identificador da linha do item, usado nas rotas de alteração/remoção.
         productId:
           type: string
         name:
@@ -651,10 +784,19 @@ components:
         quantity:
           type: integer
           example: 2
+        notes:
+          type: string
+          nullable: true
+          example: Sem cebola
+        addons:
+          type: array
+          items:
+            $ref: "#/components/schemas/OrderItemAddon"
         lineTotal:
           type: number
           format: float
-          example: 39.8
+          description: (preço base + adicionais) × quantidade.
+          example: 46.8
 
     Attendant:
       type: object
@@ -811,15 +953,35 @@ components:
           type: integer
           minimum: 1
           maximum: 99
+        notes:
+          type: string
+          maxLength: 160
+          nullable: true
+          example: Sem cebola
+        addons:
+          type: array
+          items:
+            $ref: "#/components/schemas/AddonSelection"
 
-    UpdateQuantityRequest:
+    UpdateItemRequest:
       type: object
-      required: [quantity]
+      minProperties: 1
       properties:
         quantity:
           type: integer
           minimum: 1
           maximum: 99
+        notes:
+          type: string
+          maxLength: 160
+          nullable: true
+          description: Envie uma string vazia ou null para remover a observação.
+          example: Sem cebola
+        addons:
+          type: array
+          description: Substitui a lista de adicionais da linha. Envie [] para remover todos.
+          items:
+            $ref: "#/components/schemas/AddonSelection"
 
     FinalizeRequest:
       type: object

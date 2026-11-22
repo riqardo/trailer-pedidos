@@ -3,6 +3,7 @@ import { User } from "./models/User.js";
 import { Product } from "./models/Product.js";
 import { Order } from "./models/Order.js";
 import { Counter } from "./models/Counter.js";
+import { getAddon } from "./data/addons.js";
 import { calculateTotals, fromCents, toCents } from "./utils/money.js";
 
 const PRODUCTS = [
@@ -109,14 +110,35 @@ function attendant(user) {
   return { userId: user._id, name: user.name, username: user.username };
 }
 
-function makeItem(product, quantity) {
+function makeItem(product, quantity, { notes = null, addons = [] } = {}) {
+  const addonSnapshots = addons.map((selection) => {
+    const addon = getAddon(selection.code);
+    if (!addon) {
+      throw new Error(`Adicional de seed desconhecido: ${selection.code}`);
+    }
+    return {
+      code: addon.code,
+      name: addon.name,
+      unitPrice: addon.price,
+      quantity: selection.quantity,
+      lineTotal: fromCents(toCents(addon.price) * selection.quantity),
+    };
+  });
+
+  const addonsCents = addonSnapshots.reduce(
+    (sum, addon) => sum + toCents(addon.unitPrice) * addon.quantity,
+    0,
+  );
+
   return {
     productId: product._id,
     name: product.name,
     category: product.category,
     unitPrice: product.price,
     quantity,
-    lineTotal: fromCents(toCents(product.price) * quantity),
+    notes,
+    addons: addonSnapshots,
+    lineTotal: fromCents((toCents(product.price) + addonsCents) * quantity),
   };
 }
 
@@ -128,7 +150,9 @@ async function seedOrders(users, products) {
   const now = Date.now();
 
   const openItems = [
-    makeItem(productsByName.get("Hot Dog Completo"), 2),
+    makeItem(productsByName.get("Hot Dog Completo"), 2, {
+      notes: "Sem cebola",
+    }),
     makeItem(productsByName.get("Refrigerante Lata 350ml"), 1),
   ];
   const openTotals = calculateTotals(openItems, null);
@@ -164,7 +188,7 @@ async function seedOrders(users, products) {
   const paidOrder = new Order({
     number: 2,
     customerName: "Marina Alves",
-    location: { type: "placa", label: "ABC-1D23" },
+    location: { type: "placa", label: "ABC-1D23", vehicle: "Fiat Uno prata" },
     items: paidItems,
     subtotal: paidTotals.subtotal,
     discount: paidTotals.discount,

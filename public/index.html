@@ -456,9 +456,15 @@
                     Balcão
                   </button>
                 </div>
-                <div id="location-value-wrap" class="location-value-wrap">
-                  <label for="location-value" id="location-value-label">Número da mesa</label>
-                  <input id="location-value" type="text" maxlength="40" placeholder="ex.: 4" />
+                <div id="location-fields" class="location-fields">
+                  <div class="location-value-wrap" id="location-value-wrap">
+                    <label for="location-value" id="location-value-label">Número da mesa</label>
+                    <input id="location-value" type="text" maxlength="40" placeholder="ex.: 4" />
+                  </div>
+                  <div class="location-value-wrap" id="vehicle-field" hidden>
+                    <label for="vehicle">Modelo/marca/cor do veículo</label>
+                    <input id="vehicle" type="text" maxlength="80" placeholder="ex.: Fiat Uno prata" />
+                  </div>
                 </div>
                 <p class="field-hint" id="location-balcao-hint" hidden>
                   Cliente aguardando em pé no balcão.
@@ -533,6 +539,81 @@
             </div>
           </aside>
         </form>
+      </div>
+    </div>
+
+    <!-- PERSONALIZAÇÃO DE ITEM -->
+    <div class="modal" id="item-modal" hidden>
+      <div class="modal-backdrop" data-close-item="true"></div>
+      <div class="modal-dialog modal-item" role="dialog" aria-modal="true" aria-labelledby="item-modal-title">
+        <header class="modal-header">
+          <div>
+            <p class="eyebrow">PERSONALIZAR ITEM</p>
+            <h2 id="item-modal-title">Item</h2>
+            <p class="modal-subtitle" id="item-modal-subtitle">Ajuste o preparo deste item.</p>
+          </div>
+          <button class="icon-btn" type="button" data-close-item="true" aria-label="Fechar">
+            <svg class="icon"><use href="#icon-close"></use></svg>
+          </button>
+        </header>
+
+        <div class="modal-body">
+          <div class="item-hero">
+            <div class="item-hero-icon" id="item-icon">🌭</div>
+            <div class="item-hero-info">
+              <strong id="item-base-price">R$ 0,00</strong>
+              <span id="item-category-label">Lanche</span>
+            </div>
+            <span class="item-quantity-tag" id="item-quantity-tag">1 un.</span>
+          </div>
+
+          <div class="item-qty-row">
+            <span class="label">Quantidade</span>
+            <div class="stepper stepper-lg">
+              <button type="button" id="item-qty-minus" aria-label="Diminuir quantidade">
+                <svg class="icon"><use href="#icon-minus"></use></svg>
+              </button>
+              <span id="item-qty-value">1</span>
+              <button type="button" id="item-qty-plus" aria-label="Aumentar quantidade">
+                <svg class="icon"><use href="#icon-plus"></use></svg>
+              </button>
+            </div>
+          </div>
+
+          <div class="field item-notes-field">
+            <label for="item-notes">Observação do item</label>
+            <input
+              id="item-notes"
+              type="text"
+              maxlength="160"
+              placeholder="ex.: sem cebola, sem vinagrete, salsicha bem passada"
+            />
+            <p class="field-hint">Use este campo para o que o cliente quer ou não quer no preparo.</p>
+          </div>
+
+          <div class="item-addons-section" id="item-addons-section">
+            <div class="item-addons-heading">
+              <span class="label">Adicionais</span>
+              <small>Opcional · preço por unidade</small>
+            </div>
+            <div class="item-addons-list" id="item-addons-list"></div>
+          </div>
+
+          <div class="item-modal-total">
+            <span>Total do item</span>
+            <strong id="item-modal-total">R$ 0,00</strong>
+          </div>
+
+          <div id="item-error" class="form-error" role="alert" hidden></div>
+        </div>
+
+        <footer class="modal-footer">
+          <button class="btn btn-ghost" type="button" data-close-item="true">Cancelar</button>
+          <button class="btn btn-primary" id="save-item-btn" type="button">
+            <svg class="icon"><use href="#icon-check"></use></svg>
+            Adicionar à comanda
+          </button>
+        </footer>
       </div>
     </div>
 

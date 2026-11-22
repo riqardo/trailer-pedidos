@@ -1,6 +1,6 @@
 {
   "name": "trailer-pedidos",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "private": true,
   "description": "API REST e aplicação web para registro e gerenciamento de pedidos de um trailer de cachorro-quente",
   "type": "module",

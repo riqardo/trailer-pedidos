@@ -95,6 +95,10 @@ export const api = {
     return request("/products", { query });
   },
 
+  addons() {
+    return request("/addons");
+  },
+
   orders(query) {
     return request("/orders", { query });
   },
@@ -118,15 +122,15 @@ export const api = {
     });
   },
 
-  updateItem(orderId, productId, quantity) {
-    return request(`/orders/${orderId}/items/${productId}`, {
+  updateItem(orderId, itemId, payload) {
+    return request(`/orders/${orderId}/items/${itemId}`, {
       method: "PATCH",
-      body: { quantity },
+      body: payload,
     });
   },
 
-  removeItem(orderId, productId) {
-    return request(`/orders/${orderId}/items/${productId}`, {
+  removeItem(orderId, itemId) {
+    return request(`/orders/${orderId}/items/${itemId}`, {
       method: "DELETE",
     });
   },

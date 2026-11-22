@@ -7,6 +7,7 @@ import swaggerUi from "swagger-ui-express";
 import { authRouter } from "./routes/auth.js";
 import { productsRouter } from "./routes/products.js";
 import { ordersRouter } from "./routes/orders.js";
+import { addonsRouter } from "./routes/addons.js";
 import { apiNotFound, errorHandler } from "./middleware/error.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -31,6 +32,7 @@ export function createApp() {
 
   app.use("/api/auth", authRouter);
   app.use("/api/products", productsRouter);
+  app.use("/api/addons", addonsRouter);
   app.use("/api/orders", ordersRouter);
 
   app.get("/api/openapi.yaml", (_req, res) => {

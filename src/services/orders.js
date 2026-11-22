@@ -3,6 +3,7 @@ import { Order } from "../models/Order.js";
 import { Product } from "../models/Product.js";
 import { Counter } from "../models/Counter.js";
 import { AuditLog } from "../models/AuditLog.js";
+import { getAddon } from "../data/addons.js";
 import { calculateTotals, fromCents, toCents } from "../utils/money.js";
 import {
   badRequest,
@@ -14,6 +15,8 @@ import {
 const LOCATION_TYPES = ["mesa", "placa", "balcao"];
 const PAYMENT_METHODS = ["dinheiro", "pix", "cartao"];
 const MAX_QUANTITY = 99;
+const MAX_ADDON_QUANTITY = 10;
+const MAX_NOTES_LENGTH = 160;
 
 function attendantFromUser(user) {
   return {
@@ -47,7 +50,7 @@ function normalizeLocation(value) {
   }
 
   if (value.type === "balcao") {
-    return { type: "balcao", label: "Balcão" };
+    return { type: "balcao", label: "Balcão", vehicle: null };
   }
 
   const label = typeof value.label === "string" ? value.label.trim() : "";
@@ -63,7 +66,24 @@ function normalizeLocation(value) {
     throw validationError("A identificação do local deve ter no máximo 40 caracteres.");
   }
 
-  return { type: value.type, label };
+  if (value.type === "mesa") {
+    return { type: "mesa", label, vehicle: null };
+  }
+
+  const vehicle = typeof value.vehicle === "string" ? value.vehicle.trim() : "";
+  if (!vehicle) {
+    throw validationError(
+      "Informe o modelo, marca ou cor do veículo para pedidos em placa.",
+    );
+  }
+
+  if (vehicle.length > 80) {
+    throw validationError(
+      "O modelo/marca/cor do veículo deve ter no máximo 80 caracteres.",
+    );
+  }
+
+  return { type: "placa", label, vehicle };
 }
 
 function normalizeQuantity(value) {
@@ -76,16 +96,103 @@ function normalizeQuantity(value) {
   return quantity;
 }
 
+function normalizeNotes(value) {
+  if (value === undefined) return undefined;
+  if (value === null) return null;
+  if (typeof value !== "string") {
+    throw validationError("A observação do item deve ser um texto.");
+  }
+
+  const notes = value.trim();
+  if (!notes) return null;
+  if (notes.length > MAX_NOTES_LENGTH) {
+    throw validationError(
+      `A observação do item deve ter no máximo ${MAX_NOTES_LENGTH} caracteres.`,
+    );
+  }
+  return notes;
+}
+
+function normalizeAddons(rawAddons, category) {
+  if (rawAddons === undefined || rawAddons === null) return [];
+  if (!Array.isArray(rawAddons)) {
+    throw validationError("A lista de adicionais do item é inválida.");
+  }
+  if (rawAddons.length === 0) return [];
+
+  if (category !== "lanche") {
+    throw validationError(
+      "Adicionais só podem ser incluídos em itens da categoria lanche.",
+    );
+  }
+
+  const merged = new Map();
+  for (const raw of rawAddons) {
+    if (!raw || typeof raw !== "object") {
+      throw validationError("Adicional inválido.");
+    }
+
+    const code = typeof raw.code === "string" ? raw.code.trim() : "";
+    const addon = getAddon(code);
+    if (!addon) {
+      throw validationError(`Adicional desconhecido: "${code || "sem código"}".`);
+    }
+
+    const quantity = Number(raw.quantity ?? 1);
+    if (
+      !Number.isInteger(quantity) ||
+      quantity < 1 ||
+      quantity > MAX_ADDON_QUANTITY
+    ) {
+      throw validationError(
+        `A quantidade de cada adicional deve ser entre 1 e ${MAX_ADDON_QUANTITY}.`,
+      );
+    }
+
+    const total = (merged.get(code)?.quantity ?? 0) + quantity;
+    if (total > MAX_ADDON_QUANTITY) {
+      throw validationError(
+        `A quantidade máxima do adicional "${addon.name}" é ${MAX_ADDON_QUANTITY}.`,
+      );
+    }
+
+    merged.set(code, { addon, quantity: total });
+  }
+
+  return [...merged.values()]
+    .sort((first, second) => first.addon.sortOrder - second.addon.sortOrder)
+    .map(({ addon, quantity }) => ({
+      code: addon.code,
+      name: addon.name,
+      unitPrice: addon.price,
+      quantity,
+      lineTotal: fromCents(toCents(addon.price) * quantity),
+    }));
+}
+
+function computeLineTotal(unitPrice, addons, quantity) {
+  const addonsCents = (addons ?? []).reduce(
+    (sum, addon) => sum + toCents(addon.unitPrice) * addon.quantity,
+    0,
+  );
+  return fromCents((toCents(unitPrice) + addonsCents) * quantity);
+}
+
+function itemSignature(item) {
+  const addons = [...(item.addons ?? [])]
+    .map((addon) => `${addon.code}:${addon.quantity}`)
+    .sort()
+    .join(",");
+
+  return `${String(item.productId)}|${item.notes ?? ""}|${addons}`;
+}
+
 async function buildItems(rawItems, existingItems = []) {
   if (!Array.isArray(rawItems)) {
     throw validationError("A lista de itens é obrigatória.");
   }
 
-  const existingByProduct = new Map(
-    existingItems.map((item) => [String(item.productId), item]),
-  );
-
-  const merged = new Map();
+  const prepared = [];
   for (const rawItem of rawItems) {
     if (!rawItem || typeof rawItem !== "object") {
       throw validationError("Item inválido na lista de itens.");
@@ -94,57 +201,87 @@ async function buildItems(rawItems, existingItems = []) {
       throw validationError("Identificador de produto inválido.");
     }
 
-    const productId = String(rawItem.productId);
-    const quantity = normalizeQuantity(rawItem.quantity);
-    const current = merged.get(productId);
-    merged.set(productId, {
-      quantity: Math.min(
-        MAX_QUANTITY,
-        (current?.quantity ?? 0) + quantity,
-      ),
+    prepared.push({
+      productId: String(rawItem.productId),
+      quantity: normalizeQuantity(rawItem.quantity),
+      notes: normalizeNotes(rawItem.notes) ?? null,
+      rawAddons: rawItem.addons,
     });
   }
 
-  if (merged.size === 0) {
-    return [];
-  }
+  if (prepared.length === 0) return [];
 
-  const products = await Product.find({ _id: { $in: [...merged.keys()] } });
+  const productIds = [...new Set(prepared.map((item) => item.productId))];
+  const products = await Product.find({ _id: { $in: productIds } });
   const productsById = new Map(
     products.map((product) => [String(product._id), product]),
   );
 
-  const items = [];
-  for (const [productId, entry] of merged) {
-    const product = productsById.get(productId);
+  const existingByProduct = new Map();
+  const existingBySignature = new Map();
+  for (const item of existingItems) {
+    const productId = String(item.productId);
+    if (!existingByProduct.has(productId)) {
+      existingByProduct.set(productId, item);
+    }
+    existingBySignature.set(itemSignature(item), item);
+  }
+
+  const merged = new Map();
+
+  for (const entry of prepared) {
+    const product = productsById.get(entry.productId);
     if (!product) {
-      throw notFound(`Produto ${productId} não encontrado.`);
+      throw notFound(`Produto ${entry.productId} não encontrado.`);
     }
 
-    const existing = existingByProduct.get(productId);
+    const existing = existingByProduct.get(entry.productId);
     if (!product.available && !existing) {
       throw conflict(
         "PRODUCT_UNAVAILABLE",
         `O produto "${product.name}" está indisponível e não pode ser adicionado.`,
-        { productId, productName: product.name },
+        { productId: entry.productId, productName: product.name },
       );
     }
 
     const unitPrice = product.available ? product.price : existing.unitPrice;
     const name = product.available ? product.name : existing.name;
     const category = product.available ? product.category : existing.category;
+    const addons = normalizeAddons(entry.rawAddons, category);
+    const signature = itemSignature({
+      productId: entry.productId,
+      notes: entry.notes,
+      addons,
+    });
 
-    items.push({
+    const current = merged.get(signature);
+    const existingMatch = existingBySignature.get(signature);
+    const quantity = (current?.quantity ?? 0) + entry.quantity;
+
+    if (quantity > MAX_QUANTITY) {
+      throw validationError(
+        `A quantidade máxima por item é ${MAX_QUANTITY}.`,
+      );
+    }
+
+    const item = {
       productId: product._id,
       name,
       category,
       unitPrice,
-      quantity: entry.quantity,
-      lineTotal: fromCents(toCents(unitPrice) * entry.quantity),
-    });
+      quantity,
+      notes: entry.notes,
+      addons,
+      lineTotal: computeLineTotal(unitPrice, addons, quantity),
+    };
+
+    const preservedId = current?._id ?? existingMatch?._id;
+    if (preservedId) item._id = preservedId;
+
+    merged.set(signature, item);
   }
 
-  return items;
+  return [...merged.values()];
 }
 
 function applyTotals(order) {
@@ -220,6 +357,7 @@ export async function listOrders(query, user) {
     const searchConditions = [
       { customerName: regex },
       { "location.label": regex },
+      { "location.vehicle": regex },
     ];
 
     if (/^\d+$/.test(search)) {
@@ -339,10 +477,15 @@ export async function updateOrder(orderId, payload, user) {
     const location = normalizeLocation(payload.location);
     if (
       location.type !== order.location.type ||
-      location.label !== order.location.label
+      location.label !== order.location.label ||
+      (location.vehicle ?? null) !== (order.location.vehicle ?? null)
     ) {
       changes.location = {
-        from: { type: order.location.type, label: order.location.label },
+        from: {
+          type: order.location.type,
+          label: order.location.label,
+          vehicle: order.location.vehicle ?? null,
+        },
         to: location,
       };
     }
@@ -384,9 +527,7 @@ export async function addOrderItem(orderId, payload, user) {
     throw validationError("Identificador de produto inválido.");
   }
 
-  const quantity = normalizeQuantity(payload?.quantity);
   const product = await Product.findById(payload.productId);
-
   if (!product) {
     throw notFound("Produto não encontrado.");
   }
@@ -398,42 +539,56 @@ export async function addOrderItem(orderId, payload, user) {
     );
   }
 
+  const [line] = await buildItems([payload], order.items);
+  if (!line) {
+    throw validationError("Item inválido.");
+  }
+
   const attendant = attendantFromUser(user);
+  const signature = itemSignature(line);
   const existing = order.items.find(
-    (item) => String(item.productId) === String(product._id),
+    (item) => itemSignature(item) === signature,
   );
+  const addonsDetails = line.addons.map((addon) => ({
+    code: addon.code,
+    name: addon.name,
+    quantity: addon.quantity,
+  }));
 
   if (existing) {
-    if (existing.quantity + quantity > MAX_QUANTITY) {
+    if (existing.quantity + line.quantity > MAX_QUANTITY) {
       throw validationError(
-        `A quantidade máxima por produto é ${MAX_QUANTITY}.`,
+        `A quantidade máxima por item é ${MAX_QUANTITY}.`,
       );
     }
+
     const before = existing.quantity;
-    existing.quantity += quantity;
-    existing.lineTotal = fromCents(toCents(existing.unitPrice) * existing.quantity);
+    existing.quantity += line.quantity;
+    existing.lineTotal = computeLineTotal(
+      existing.unitPrice,
+      existing.addons,
+      existing.quantity,
+    );
+
     pushHistory(order, "item_added", attendant, {
-      productId: String(product._id),
+      productId: String(line.productId),
       productName: existing.name,
-      quantityAdded: quantity,
+      quantityAdded: line.quantity,
       quantityBefore: before,
       quantityAfter: existing.quantity,
+      notes: existing.notes ?? null,
+      addons: addonsDetails,
     });
   } else {
-    order.items.push({
-      productId: product._id,
-      name: product.name,
-      category: product.category,
-      unitPrice: product.price,
-      quantity,
-      lineTotal: fromCents(toCents(product.price) * quantity),
-    });
+    order.items.push(line);
     pushHistory(order, "item_added", attendant, {
-      productId: String(product._id),
-      productName: product.name,
-      quantityAdded: quantity,
+      productId: String(line.productId),
+      productName: line.name,
+      quantityAdded: line.quantity,
       quantityBefore: 0,
-      quantityAfter: quantity,
+      quantityAfter: line.quantity,
+      notes: line.notes,
+      addons: addonsDetails,
     });
   }
 
@@ -442,62 +597,101 @@ export async function addOrderItem(orderId, payload, user) {
 
   await order.save();
   await recordAudit("order.item_added", attendant, order, {
-    productId: String(product._id),
-    productName: product.name,
-    quantity,
+    productId: String(line.productId),
+    productName: line.name,
+    quantity: line.quantity,
+    notes: line.notes,
+    addons: addonsDetails,
   });
 
   return order;
 }
 
-export async function updateOrderItem(orderId, productId, payload, user) {
+export async function updateOrderItem(orderId, itemId, payload, user) {
   const order = await findOrderOrThrow(orderId);
   ensureOpen(order);
 
-  const quantity = normalizeQuantity(payload?.quantity);
+  if (!mongoose.isValidObjectId(itemId)) {
+    throw notFound("Item não encontrado neste pedido.");
+  }
+
   const item = order.items.find(
-    (current) => String(current.productId) === String(productId),
+    (current) => String(current._id) === String(itemId),
   );
 
   if (!item) {
-    throw notFound("Produto não encontrado neste pedido.");
+    throw notFound("Item não encontrado neste pedido.");
+  }
+
+  const hasField = (field) =>
+    Object.prototype.hasOwnProperty.call(payload ?? {}, field);
+
+  if (!hasField("quantity") && !hasField("notes") && !hasField("addons")) {
+    throw validationError(
+      "Informe ao menos um campo do item: quantity, notes ou addons.",
+    );
   }
 
   const attendant = attendantFromUser(user);
-  const before = item.quantity;
-  item.quantity = quantity;
-  item.lineTotal = fromCents(toCents(item.unitPrice) * quantity);
+  const before = {
+    quantity: item.quantity,
+    notes: item.notes ?? null,
+    addons: item.addons.map((addon) => ({
+      code: addon.code,
+      quantity: addon.quantity,
+    })),
+  };
+
+  if (hasField("quantity")) {
+    item.quantity = normalizeQuantity(payload.quantity);
+  }
+  if (hasField("notes")) {
+    item.notes = normalizeNotes(payload.notes) ?? null;
+  }
+  if (hasField("addons")) {
+    item.addons = normalizeAddons(payload.addons, item.category);
+  }
+
+  item.lineTotal = computeLineTotal(item.unitPrice, item.addons, item.quantity);
 
   order.updatedBy = attendant;
   applyTotals(order);
-  pushHistory(order, "item_updated", attendant, {
+
+  const details = {
     productId: String(item.productId),
     productName: item.name,
-    quantityBefore: before,
-    quantityAfter: quantity,
-  });
+    quantityBefore: before.quantity,
+    quantityAfter: item.quantity,
+    notesBefore: before.notes,
+    notesAfter: item.notes ?? null,
+    addonsBefore: before.addons,
+    addonsAfter: item.addons.map((addon) => ({
+      code: addon.code,
+      quantity: addon.quantity,
+    })),
+  };
+  pushHistory(order, "item_updated", attendant, details);
 
   await order.save();
-  await recordAudit("order.item_updated", attendant, order, {
-    productId: String(item.productId),
-    productName: item.name,
-    quantityBefore: before,
-    quantityAfter: quantity,
-  });
+  await recordAudit("order.item_updated", attendant, order, details);
 
   return order;
 }
 
-export async function removeOrderItem(orderId, productId, user) {
+export async function removeOrderItem(orderId, itemId, user) {
   const order = await findOrderOrThrow(orderId);
   ensureOpen(order);
 
+  if (!mongoose.isValidObjectId(itemId)) {
+    throw notFound("Item não encontrado neste pedido.");
+  }
+
   const itemIndex = order.items.findIndex(
-    (current) => String(current.productId) === String(productId),
+    (current) => String(current._id) === String(itemId),
   );
 
   if (itemIndex === -1) {
-    throw notFound("Produto não encontrado neste pedido.");
+    throw notFound("Item não encontrado neste pedido.");
   }
 
   const [removed] = order.items.splice(itemIndex, 1);
@@ -509,6 +703,12 @@ export async function removeOrderItem(orderId, productId, user) {
     productId: String(removed.productId),
     productName: removed.name,
     quantity: removed.quantity,
+    notes: removed.notes ?? null,
+    addons: removed.addons.map((addon) => ({
+      code: addon.code,
+      name: addon.name,
+      quantity: addon.quantity,
+    })),
   });
 
   await order.save();
@@ -516,6 +716,7 @@ export async function removeOrderItem(orderId, productId, user) {
     productId: String(removed.productId),
     productName: removed.name,
     quantity: removed.quantity,
+    notes: removed.notes ?? null,
   });
 
   return order;
