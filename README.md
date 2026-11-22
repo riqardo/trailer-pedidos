@@ -7,6 +7,46 @@ O projeto entrega as quatro funcionalidades essenciais do trailer — **login, c
 cardápio, registro de pedidos e finalização de pedidos** — com uma interface pensada para
 uso rápido no balcão e uma API documentada em OpenAPI/Swagger.
 
+## Índice
+
+- [Início rápido](#início-rápido)
+- [O que é esta aplicação?](#o-que-é-esta-aplicação)
+- [Como instalar](#como-instalar)
+- [Como executar](#como-executar)
+- [Como usar a aplicação](#como-usar-a-aplicação)
+- [URLs importantes](#urls-importantes)
+- [Dados de teste](#dados-de-teste)
+- [Regras de negócio](#regras-de-negócio)
+- [Endpoints da API](#endpoints-da-api)
+- [Estrutura do projeto](#estrutura-do-projeto)
+- [Solução de problemas](#solução-de-problemas)
+- [Observações](#observações)
+
+---
+
+## Início rápido
+
+Pré-requisito: **Node.js 20.19 ou superior** e npm instalados.
+
+```bash
+git clone https://github.com/riqardo/trailer-pedidos.git
+cd trailer-pedidos
+npm install
+npm start
+```
+
+Depois:
+
+1. Abra **http://localhost:3000**.
+2. Clique em uma das contas de demonstração (`ana` / `ana123`).
+3. Use **Novo pedido** para registrar uma comanda e **Finalizar e receber** para fechar a conta.
+4. Consulte a API em **http://localhost:3000/docs**.
+
+> ⏳ Na primeira execução, o `mongodb-memory-server` baixa o binário do MongoDB e isso pode
+> demorar alguns minutos. As execuções seguintes usam o cache local.
+>
+> 🔄 O banco é em memória: **reiniciar o servidor restaura os dados de teste**.
+
 ---
 
 ## O que é esta aplicação?
@@ -111,6 +151,10 @@ Saída esperada:
 > ⚠️ Como o banco é em memória, **os dados voltam ao estado inicial a cada reinício**.
 > Isso é intencional e não requer instalação de MongoDB.
 
+Para **encerrar**, pressione `Ctrl+C` no terminal. Ao parar, o MongoDB em memória é desligado
+e todos os pedidos criados durante o uso são descartados. Para começar do zero, basta parar e
+executar `npm start` novamente.
+
 ---
 
 ## URLs importantes
@@ -119,7 +163,7 @@ Saída esperada:
 | -------------------------------- | ----------------------------------------------------- |
 | `http://localhost:3000`          | Aplicação web (login do atendente)                    |
 | `http://localhost:3000/docs`     | Documentação interativa da API (Swagger UI)           |
-| `http://localhost:3000/api/docs` | Mesmo Swagger UI, em caminho alternativo              |
+| `http://localhost:3000/api/docs` | Redireciona para a documentação Swagger em `/docs/` |
 | `http://localhost:3000/api/openapi.yaml` | Especificação OpenAPI 3.0 em YAML             |
 | `http://localhost:3000/api/health` | Verificação de disponibilidade da API               |
 | `http://localhost:3000/api/auth/login` | Login (POST)                                    |
@@ -198,18 +242,80 @@ Detalhes importantes da implementação:
 
 ---
 
-## Fluxo rápido de uso
+## Como usar a aplicação
 
-1. Acesse `http://localhost:3000` e entre com `ana` / `ana123` (ou clique no atalho).
-2. Clique em **Novo pedido**.
-3. Informe o nome do cliente e escolha **Mesa**, **Placa** ou **Balcão**.
-4. Clique nos produtos para adicionar à comanda; ajuste quantidades com `−` e `+`.
-5. Clique em **Registrar pedido**.
-6. No detalhe do pedido, clique em **Finalizar e receber**.
-7. Escolha a forma de pagamento e confirme. Em dinheiro, o desconto de 10% aparece
-   automaticamente.
-8. O pedido finalizado fica disponível apenas para consulta, com recibo e histórico de quem
-   atendeu.
+### 1. Login
+
+Acesse `http://localhost:3000` e informe usuário e senha, ou clique em uma das contas de
+demonstração. O token JWT é válido por 12 horas; o botão de sair fica no rodapé da barra
+lateral. Todas as operações exigem um atendente autenticado.
+
+### 2. Consulta ao cardápio
+
+Clique em **Cardápio** na navegação. A tela mostra todos os produtos, preços e disponibilidade.
+Produtos indisponíveis aparecem com o selo **Indisponível** e não podem ser adicionados.
+Também é possível filtrar por **Lanches** ou **Bebidas** e pesquisar pelo nome. Ao clicar em
+**Adicionar**, um novo pedido já é aberto com aquele item na comanda.
+
+### 3. Registro de pedido
+
+1. Clique em **Novo pedido**.
+2. Informe o **nome do cliente** (obrigatório, 2 a 80 caracteres).
+3. Escolha o local: **Mesa**, **Placa** ou **Balcão**.
+   - Mesa: informe o número (ex.: `4`).
+   - Placa: informe a identificação (ex.: `ABC-1D23`).
+   - Balcão: usado para quem aguarda em pé; não precisa de identificação.
+4. Adicione produtos pela lista; use `+` e `−` para ajustar quantidades e a lixeira para
+   remover um item.
+5. Confira o subtotal e o total na comanda e clique em **Registrar pedido**.
+
+Um pedido é criado em aberto e recebe um número sequencial (ex.: `#0003`). O atendente
+autenticado fica registrado como criador.
+
+### 4. Alteração de pedido
+
+Somente pedidos em aberto podem ser alterados. Abra o pedido, clique em **Editar**, faça as
+mudanças e clique em **Salvar alterações**. As ações de edição não aparecem em pedidos
+finalizados. Tentativas de alteração pela API retornam `409 ORDER_FINALIZED`.
+
+### 5. Consulta de pedidos
+
+A tela **Pedidos** lista as comandas e permite:
+
+- alternar entre **Abertos**, **Finalizados** e **Todos**;
+- buscar por nome do cliente, mesa, placa ou número do pedido;
+- abrir o detalhe de qualquer pedido;
+- acompanhar os indicadores de pedidos abertos, finalizados e faturamento do dia.
+
+Toda abertura de pedido (e toda listagem pela API) registra a consulta com o atendente.
+
+### 6. Finalização e pagamento
+
+1. Abra um pedido em aberto.
+2. Clique em **Finalizar e receber**.
+3. Confira o resumo e escolha **Dinheiro**, **Pix** ou **Cartão**.
+4. Em dinheiro, a interface já mostra o desconto de 10% no total.
+5. Clique em **Confirmar pagamento**.
+
+O pagamento é **simulado** (não há cobrança real). Após a confirmação, o pedido passa para
+**Finalizado**, ganha um recibo com a forma de pagamento, valor pago e atendente responsável,
+e fica **somente para consulta**. Pedidos sem itens não podem ser finalizados.
+
+### 7. Histórico e auditoria
+
+No detalhe do pedido, a seção **Histórico de atendimento** mostra os eventos (criação, itens
+adicionados/removidos, alterações, consultas e pagamento), sempre com o nome do atendente e o
+horário. A API também grava esses eventos na coleção `AuditLog`.
+
+### Fluxo resumido
+
+1. Entrar com `ana` / `ana123`.
+2. **Novo pedido** → nome + mesa/placa/balcão.
+3. Adicionar produtos e ajustar quantidades.
+4. **Registrar pedido**.
+5. Abrir o pedido → **Finalizar e receber**.
+6. Escolher a forma de pagamento e confirmar.
+7. Consultar o recibo e o histórico no pedido finalizado.
 
 ---
 
@@ -217,7 +323,18 @@ Detalhes importantes da implementação:
 
 Todas as rotas de pedidos e produtos exigem `Authorization: Bearer <token>`.
 A especificação completa, com schemas e exemplos, está em [`docs/openapi.yaml`](docs/openapi.yaml)
-e pode ser explorada em `/docs`.
+e pode ser explorada em `/docs` (o caminho `/api/docs` redireciona para `/docs/`).
+
+### Autenticando na API
+
+1. Faça login em `POST /api/auth/login` com um dos usuários de teste.
+2. Copie o valor de `token` retornado.
+3. No Swagger (`/docs`), clique em **Authorize**, cole o token e confirme.
+4. Em chamadas diretas (curl, Postman etc.), envie o cabeçalho
+   `Authorization: Bearer <token>`.
+
+O token expira em **12 horas** (configurável em `JWT_EXPIRES_IN`). Sem token, as rotas
+protegidas retornam `401 UNAUTHORIZED`.
 
 | Método | Rota                                      | Descrição                                        |
 | ------ | ----------------------------------------- | ------------------------------------------------ |
@@ -293,11 +410,78 @@ trailer-pedidos/
 
 ---
 
+## Solução de problemas
+
+### A porta 3000 já está em uso
+
+Altere a porta no `.env` ou inicie com outra porta:
+
+```bash
+# Linux/macOS
+PORT=3001 npm start
+
+# Windows PowerShell
+$env:PORT=3001; npm.cmd start
+```
+
+Depois acesse `http://localhost:3001`.
+
+### O PowerShell bloqueia o comando npm
+
+Se aparecer erro sobre `npm.ps1` por política de execução, use `npm.cmd`:
+
+```powershell
+npm.cmd install
+npm.cmd start
+```
+
+Ou ajuste a política para o seu usuário:
+
+```powershell
+Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
+```
+
+### A primeira execução está demorando
+
+O `mongodb-memory-server` baixa o binário do MongoDB na primeira vez que a aplicação sobe.
+Isso exige internet e pode levar alguns minutos. Se a rede falhar, execute `npm start`
+novamente. Depois do primeiro download, o binário fica em cache e o start é rápido.
+
+### Os pedidos desapareceram
+
+Isso é esperado: o banco é **em memória** e é recriado com os dados de teste a cada reinício.
+Para manter os dados, seria necessário trocar a configuração para um MongoDB persistente.
+
+### A API retorna 401
+
+- Confirme se o cabeçalho `Authorization: Bearer <token>` foi enviado.
+- O token vale por 12 horas; faça login novamente se tiver expirado.
+- No Swagger, clique em **Authorize** e informe um token atualizado.
+
+### Erro de versão do Node.js
+
+O projeto exige **Node.js 20.19 ou superior**. Verifique com:
+
+```bash
+node --version
+```
+
+### Como saber se a aplicação está no ar
+
+Acesse `http://localhost:3000/api/health`. A resposta esperada é semelhante a:
+
+```json
+{ "status": "ok", "service": "trailer-do-bigode-api", "timestamp": "..." }
+```
+
+---
+
 ## Observações
 
 - **Não há suíte de testes automatizados** neste projeto, por decisão de escopo.
 - O frontend não usa framework nem bundler: é servido diretamente pelo Express.
 - A documentação Swagger permite autenticar com o botão **Authorize** usando o token do
   login, e assim testar os endpoints protegidos.
-- Para encerrar o servidor, use `Ctrl+C`; o processo desliga o MongoDB em memória
-  corretamente.
+- O pagamento é simulado; nenhuma integração financeira real está configurada.
+- A aplicação é de uso interno do trailer e não possui controle de permissões por perfil:
+  todos os usuários autenticados podem operar pedidos.
