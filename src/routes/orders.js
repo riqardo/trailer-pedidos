@@ -46,20 +46,20 @@ ordersRouter.post("/:id/items", async (req, res) => {
   res.status(201).json({ order: serializeOrder(order) });
 });
 
-ordersRouter.patch("/:id/items/:productId", async (req, res) => {
+ordersRouter.patch("/:id/items/:itemId", async (req, res) => {
   const order = await updateOrderItem(
     req.params.id,
-    req.params.productId,
+    req.params.itemId,
     req.body,
     req.user,
   );
   res.json({ order: serializeOrder(order) });
 });
 
-ordersRouter.delete("/:id/items/:productId", async (req, res) => {
+ordersRouter.delete("/:id/items/:itemId", async (req, res) => {
   const order = await removeOrderItem(
     req.params.id,
-    req.params.productId,
+    req.params.itemId,
     req.user,
   );
   res.json({ order: serializeOrder(order) });

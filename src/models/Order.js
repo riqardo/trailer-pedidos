@@ -9,21 +9,31 @@ const attendantSchema = new mongoose.Schema(
   { _id: false },
 );
 
-const orderItemSchema = new mongoose.Schema(
+const addonSchema = new mongoose.Schema(
   {
-    productId: {
-      type: mongoose.Schema.Types.ObjectId,
-      ref: "Product",
-      required: true,
-    },
+    code: { type: String, required: true },
     name: { type: String, required: true },
-    category: { type: String, enum: ["lanche", "bebida"], required: true },
     unitPrice: { type: Number, required: true },
     quantity: { type: Number, required: true, min: 1 },
     lineTotal: { type: Number, required: true },
   },
   { _id: false },
 );
+
+const orderItemSchema = new mongoose.Schema({
+  productId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: "Product",
+    required: true,
+  },
+  name: { type: String, required: true },
+  category: { type: String, enum: ["lanche", "bebida"], required: true },
+  unitPrice: { type: Number, required: true },
+  quantity: { type: Number, required: true, min: 1 },
+  notes: { type: String, trim: true, default: null },
+  addons: { type: [addonSchema], default: [] },
+  lineTotal: { type: Number, required: true },
+});
 
 const locationSchema = new mongoose.Schema(
   {
@@ -33,6 +43,7 @@ const locationSchema = new mongoose.Schema(
       required: true,
     },
     label: { type: String, required: true, trim: true },
+    vehicle: { type: String, trim: true, default: null },
   },
   { _id: false },
 );

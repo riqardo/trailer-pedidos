@@ -45,6 +45,7 @@ const PAYMENTS = {
 const state = {
   user: null,
   products: [],
+  addons: [],
   orders: [],
   filter: "open",
   search: "",
@@ -53,6 +54,7 @@ const state = {
   menuSearch: "",
   activeOrder: null,
   editor: createBlankEditor(),
+  itemEditor: null,
   finalize: { order: null, method: "dinheiro", saving: false },
 };
 
@@ -128,7 +130,11 @@ function formatWhen(value) {
 function locationText(location) {
   if (!location) return "";
   if (location.type === "balcao") return "Balcão";
-  return `${LOCATION_LABELS[location.type]} ${location.label}`;
+
+  const base = `${LOCATION_LABELS[location.type]} ${location.label}`;
+  return location.type === "placa" && location.vehicle
+    ? `${base} · ${location.vehicle}`
+    : base;
 }
 
 function initials(name) {
@@ -158,9 +164,30 @@ function itemSummary(order) {
   return remaining > 0 ? `${shown} · +${remaining}` : shown;
 }
 
+function createLineId() {
+  if (typeof crypto !== "undefined" && crypto.randomUUID) {
+    return crypto.randomUUID();
+  }
+  return `line-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
+
+function addonIcon(code) {
+  return state.addons.find((addon) => addon.code === code)?.icon ?? "➕";
+}
+
 function toCartItem(item) {
   const product = state.products.find((entry) => entry.id === item.productId);
-  return {
+  const addons = (item.addons ?? []).map((addon) => ({
+    code: addon.code,
+    name: addon.name,
+    unitPrice: Number(addon.unitPrice),
+    quantity: addon.quantity,
+    icon: addonIcon(addon.code),
+    lineTotal: Number(addon.lineTotal),
+  }));
+
+  const line = {
+    lineId: item.id ?? createLineId(),
     productId: item.productId,
     name: item.name,
     unitPrice: Number(item.unitPrice),
@@ -168,7 +195,36 @@ function toCartItem(item) {
     category: item.category,
     icon: product?.icon ?? (item.category === "bebida" ? "🥤" : "🌭"),
     available: product?.available ?? true,
+    notes: item.notes ?? "",
+    addons,
+    lineTotal: 0,
   };
+
+  line.lineTotal = computeCartLineTotal(line);
+  return line;
+}
+
+function computeCartLineTotal(line) {
+  const addonsCents = (line.addons ?? []).reduce(
+    (sum, addon) => sum + sumCents(addon.unitPrice) * addon.quantity,
+    0,
+  );
+  return ((sumCents(line.unitPrice) + addonsCents) * line.quantity) / 100;
+}
+
+function lineUnitPrice(line) {
+  const addonsCents = (line.addons ?? []).reduce(
+    (sum, addon) => sum + sumCents(addon.unitPrice) * addon.quantity,
+    0,
+  );
+  return (sumCents(line.unitPrice) + addonsCents) / 100;
+}
+
+function lineAddonsSummary(line) {
+  if (!line.addons?.length) return "";
+  return line.addons
+    .map((addon) => `+ ${addon.quantity > 1 ? `${addon.quantity}× ` : ""}${addon.name}`)
+    .join(" · ");
 }
 
 function sumCents(value) {
@@ -318,12 +374,14 @@ async function handleLogin(event) {
     renderAll();
 
     try {
-      const [productsData, ordersData] = await Promise.all([
+      const [productsData, ordersData, addonsData] = await Promise.all([
         api.products(),
         api.orders({ limit: 200 }),
+        api.addons(),
       ]);
       state.products = productsData.products;
       state.orders = ordersData.orders;
+      state.addons = addonsData.addons;
       renderAll();
     } catch (error) {
       handleRequestError(error);
@@ -360,12 +418,14 @@ async function restoreSession() {
     window.scrollTo(0, 0);
 
     try {
-      const [productsData, ordersData] = await Promise.all([
+      const [productsData, ordersData, addonsData] = await Promise.all([
         api.products(),
         api.orders({ limit: 200 }),
+        api.addons(),
       ]);
       state.products = productsData.products;
       state.orders = ordersData.orders;
+      state.addons = addonsData.addons;
       renderAll();
     } catch (error) {
       handleRequestError(error);
@@ -387,9 +447,11 @@ function forceLoginScreen(message = "") {
 
   state.user = null;
   state.products = [];
+  state.addons = [];
   state.orders = [];
   state.activeOrder = null;
   state.editor = createBlankEditor();
+  state.itemEditor = null;
   state.finalize = { order: null, method: "dinheiro", saving: false };
   state.search = "";
   state.filter = "open";
@@ -442,13 +504,15 @@ function updateUserChrome() {
 }
 
 async function loadData() {
-  const [productsData, ordersData] = await Promise.all([
+  const [productsData, ordersData, addonsData] = await Promise.all([
     api.products(),
     api.orders({ limit: 200 }),
+    api.addons(),
   ]);
 
   state.products = productsData.products;
   state.orders = ordersData.orders;
+  state.addons = addonsData.addons;
   renderAll();
 }
 
@@ -729,6 +793,7 @@ function renderMenu() {
 function openOrderEditor(order = null, { initialProductId = null } = {}) {
   state.editor = createBlankEditor();
   state.editor.order = order;
+  state.itemEditor = null;
 
   if (order) {
     state.editor.cart = order.items.map(toCartItem);
@@ -736,14 +801,11 @@ function openOrderEditor(order = null, { initialProductId = null } = {}) {
     setLocation(
       order.location.type,
       order.location.type === "balcao" ? "" : order.location.label,
+      order.location.vehicle ?? "",
     );
   } else {
     $("#customer-name").value = "";
     setLocation("mesa", "");
-  }
-
-  if (initialProductId) {
-    addProductToCart(initialProductId, { silent: true });
   }
 
   $("#order-modal-title").textContent = order
@@ -756,6 +818,7 @@ function openOrderEditor(order = null, { initialProductId = null } = {}) {
   $("#order-error").hidden = true;
   $("#customer-name").classList.remove("invalid");
   $("#location-value").classList.remove("invalid");
+  $("#vehicle").classList.remove("invalid");
 
   $$("#editor-categories .segment").forEach((button) => {
     button.classList.toggle("active", button.dataset.category === "all");
@@ -768,15 +831,15 @@ function openOrderEditor(order = null, { initialProductId = null } = {}) {
   $("#order-form").scrollTop = 0;
 
   if (initialProductId) {
-    toast("Item adicionado à nova comanda.", "info");
+    openItemModal(initialProductId);
+  } else {
+    window.setTimeout(() => {
+      $("#customer-name").focus();
+    }, 80);
   }
-
-  window.setTimeout(() => {
-    $("#customer-name").focus();
-  }, 80);
 }
 
-function setLocation(type, value) {
+function setLocation(type, value, vehicle = "") {
   state.editor.locationType = type;
 
   $$("#location-toggle .location-option").forEach((button) => {
@@ -784,14 +847,21 @@ function setLocation(type, value) {
   });
 
   const wrap = $("#location-value-wrap");
+  const vehicleField = $("#vehicle-field");
+  const fields = $("#location-fields");
   const input = $("#location-value");
+  const vehicleInput = $("#vehicle");
   const label = $("#location-value-label");
   const hint = $("#location-balcao-hint");
 
+  fields.classList.toggle("placa", type === "placa");
+
   if (type === "balcao") {
     wrap.hidden = true;
+    vehicleField.hidden = true;
     hint.hidden = false;
     input.value = "";
+    vehicleInput.value = "";
   } else {
     wrap.hidden = false;
     hint.hidden = true;
@@ -799,6 +869,9 @@ function setLocation(type, value) {
     label.textContent =
       type === "mesa" ? "Número da mesa" : "Identificação da placa";
     input.placeholder = type === "mesa" ? "ex.: 4" : "ex.: ABC-1D23";
+
+    vehicleField.hidden = type !== "placa";
+    vehicleInput.value = type === "placa" ? vehicle ?? "" : "";
   }
 }
 
@@ -863,7 +936,7 @@ function renderCart() {
   const cart = state.editor.cart;
   const count = cart.reduce((sum, item) => sum + item.quantity, 0);
   const subtotalCents = cart.reduce(
-    (sum, item) => sum + sumCents(item.unitPrice) * item.quantity,
+    (sum, item) => sum + sumCents(item.lineTotal),
     0,
   );
   const subtotal = subtotalCents / 100;
@@ -881,15 +954,27 @@ function renderCart() {
   container.hidden = cart.length === 0;
 
   container.innerHTML = cart
-    .map(
-      (item) => `
-        <div class="cart-item" data-cart-product="${esc(item.productId)}">
+    .map((item) => {
+      const addonsSummary = lineAddonsSummary(item);
+
+      return `
+        <div class="cart-item" data-cart-line="${esc(item.lineId)}">
           <span class="cart-item-icon">${esc(item.icon)}</span>
           <span class="cart-item-info">
             <strong>${esc(item.name)}</strong>
-            <small>${money(item.unitPrice)} cada${
+            <small>${money(lineUnitPrice(item))} cada${
               item.available ? "" : " · indisponível"
             }</small>
+            ${
+              addonsSummary
+                ? `<small class="cart-item-extra">${esc(addonsSummary)}</small>`
+                : ""
+            }
+            ${
+              item.notes
+                ? `<small class="cart-item-note">Obs.: ${esc(item.notes)}</small>`
+                : ""
+            }
           </span>
           <span class="cart-item-actions">
             <span class="stepper">
@@ -902,6 +987,15 @@ function renderCart() {
               </button>
             </span>
             <button
+              class="cart-edit"
+              type="button"
+              data-cart-edit
+              aria-label="Editar ${esc(item.name)}"
+              title="Editar observação e adicionais"
+            >
+              ${icon("edit")}
+            </button>
+            <button
               class="cart-remove"
               type="button"
               data-cart-remove
@@ -911,22 +1005,63 @@ function renderCart() {
             </button>
           </span>
         </div>
-      `,
-    )
+      `;
+    })
     .join("");
 
   $("#save-order-btn").disabled = cart.length === 0 || state.editor.saving;
 }
 
-function addProductToCart(productId, { silent = false } = {}) {
+function lineSignature(line) {
+  const addons = [...(line.addons ?? [])]
+    .map((addon) => `${addon.code}:${addon.quantity}`)
+    .sort()
+    .join(",");
+  return `${line.productId}|${line.notes ?? ""}|${addons}`;
+}
+
+function itemEditorAddons() {
+  if (!state.itemEditor) return [];
+
+  return state.addons
+    .filter((addon) => (state.itemEditor.addons[addon.code] ?? 0) > 0)
+    .map((addon) => {
+      const quantity = state.itemEditor.addons[addon.code];
+      return {
+        code: addon.code,
+        name: addon.name,
+        unitPrice: Number(addon.price),
+        quantity,
+        icon: addon.icon,
+        lineTotal: (sumCents(addon.price) * quantity) / 100,
+      };
+    });
+}
+
+function itemEditorTotal() {
+  const editor = state.itemEditor;
+  if (!editor) return 0;
+
+  const addonsCents = itemEditorAddons().reduce(
+    (sum, addon) => sum + sumCents(addon.unitPrice) * addon.quantity,
+    0,
+  );
+
+  return ((sumCents(editor.unitPrice) + addonsCents) * editor.quantity) / 100;
+}
+
+function openItemModal(productId, { lineId = null } = {}) {
   const product = state.products.find((entry) => entry.id === productId);
+  const line = lineId
+    ? state.editor.cart.find((entry) => entry.lineId === lineId)
+    : null;
 
   if (!product) {
     toast("Produto não encontrado no cardápio.", "error");
     return;
   }
 
-  if (!product.available) {
+  if (!line && !product.available) {
     toast(
       `“${product.name}” está indisponível e não pode ser adicionado.`,
       "error",
@@ -934,65 +1069,226 @@ function addProductToCart(productId, { silent = false } = {}) {
     return;
   }
 
-  const existing = state.editor.cart.find(
-    (item) => item.productId === productId,
-  );
-
-  if (existing) {
-    if (existing.quantity >= 99) {
-      toast("A quantidade máxima por produto é 99.", "info");
-      return;
-    }
-    existing.quantity += 1;
-  } else {
-    state.editor.cart.push({
-      productId: product.id,
-      name: product.name,
-      unitPrice: Number(product.price),
-      quantity: 1,
-      category: product.category,
-      icon: product.icon,
-      available: product.available,
+  const selectedAddons = {};
+  if (line) {
+    line.addons.forEach((addon) => {
+      selectedAddons[addon.code] = addon.quantity;
     });
   }
 
-  state.editor.dirty = true;
-  renderCart();
+  state.itemEditor = {
+    product,
+    lineId: line?.lineId ?? null,
+    unitPrice: Number(line?.unitPrice ?? product.price),
+    quantity: line?.quantity ?? 1,
+    notes: line?.notes ?? "",
+    addons: selectedAddons,
+  };
 
-  if (!silent) {
-    $("#order-error").hidden = true;
+  $("#item-modal-title").textContent = product.name;
+  $("#item-modal-subtitle").textContent = line
+    ? "Edite a quantidade, a observação ou os adicionais deste item."
+    : "Ajuste o preparo antes de adicionar à comanda.";
+  $("#item-icon").textContent = product.icon;
+  $("#item-base-price").textContent = `${money(state.itemEditor.unitPrice)} cada`;
+  $("#item-category-label").textContent =
+    product.category === "bebida" ? "Bebida" : "Lanche";
+  $("#item-notes").value = line?.notes ?? "";
+  $("#item-notes").classList.remove("invalid");
+  $("#item-error").hidden = true;
+  $("#save-item-btn").innerHTML = `${icon("check")} ${
+    line ? "Salvar item" : "Adicionar à comanda"
+  }`;
+
+  renderItemModal();
+  showModal("item-modal");
+}
+
+function renderItemModal() {
+  const editor = state.itemEditor;
+  if (!editor) return;
+
+  const addonsSection = $("#item-addons-section");
+  const isLanche = editor.product.category === "lanche";
+  addonsSection.hidden = !isLanche || state.addons.length === 0;
+
+  $("#item-qty-value").textContent = editor.quantity;
+  $("#item-quantity-tag").textContent = `${editor.quantity} un.`;
+  $("#item-modal-total").textContent = money(itemEditorTotal());
+
+  if (isLanche && state.addons.length) {
+    $("#item-addons-list").innerHTML = state.addons
+      .map((addon) => {
+        const quantity = editor.addons[addon.code] ?? 0;
+
+        return `
+          <div class="item-addon ${quantity > 0 ? "selected" : ""}">
+            <span class="item-addon-icon">${esc(addon.icon)}</span>
+            <span class="item-addon-info">
+              <strong>${esc(addon.name)}</strong>
+              <small>${money(addon.price)} por unidade</small>
+            </span>
+            <span class="stepper">
+              <button
+                type="button"
+                data-addon-minus="${esc(addon.code)}"
+                aria-label="Remover ${esc(addon.name)}"
+                ${quantity === 0 ? "disabled" : ""}
+              >
+                ${icon("minus")}
+              </button>
+              <span>${quantity}</span>
+              <button
+                type="button"
+                data-addon-plus="${esc(addon.code)}"
+                aria-label="Adicionar ${esc(addon.name)}"
+                ${quantity >= 10 ? "disabled" : ""}
+              >
+                ${icon("plus")}
+              </button>
+            </span>
+          </div>
+        `;
+      })
+      .join("");
   }
 }
 
+function changeItemQuantity(delta) {
+  if (!state.itemEditor) return;
+
+  const next = state.itemEditor.quantity + delta;
+  if (next < 1 || next > 99) return;
+  state.itemEditor.quantity = next;
+  renderItemModal();
+}
+
+function changeItemAddon(code, delta) {
+  if (!state.itemEditor) return;
+
+  const current = state.itemEditor.addons[code] ?? 0;
+  const next = current + delta;
+  if (next < 0 || next > 10) return;
+
+  if (next === 0) {
+    delete state.itemEditor.addons[code];
+  } else {
+    state.itemEditor.addons[code] = next;
+  }
+  renderItemModal();
+}
+
+function saveItemEditor() {
+  const editor = state.itemEditor;
+  if (!editor) return;
+
+  const notes = $("#item-notes").value.trim();
+  const errorBox = $("#item-error");
+
+  errorBox.hidden = true;
+  $("#item-notes").classList.remove("invalid");
+
+  if (notes.length > 160) {
+    $("#item-notes").classList.add("invalid");
+    errorBox.textContent = "A observação deve ter no máximo 160 caracteres.";
+    errorBox.hidden = false;
+    return;
+  }
+
+  const addons = itemEditorAddons();
+  const line = editor.lineId
+    ? state.editor.cart.find((entry) => entry.lineId === editor.lineId)
+    : null;
+
+  if (editor.lineId && !line) {
+    closeItemModal();
+    return;
+  }
+
+  if (line) {
+    line.quantity = editor.quantity;
+    line.notes = notes;
+    line.addons = addons;
+    line.lineTotal = computeCartLineTotal(line);
+  } else {
+    const newLine = {
+      lineId: createLineId(),
+      productId: editor.product.id,
+      name: editor.product.name,
+      unitPrice: editor.unitPrice,
+      quantity: editor.quantity,
+      category: editor.product.category,
+      icon: editor.product.icon,
+      available: editor.product.available,
+      notes,
+      addons,
+      lineTotal: 0,
+    };
+    newLine.lineTotal = computeCartLineTotal(newLine);
+
+    const signature = lineSignature(newLine);
+    const existing = state.editor.cart.find(
+      (entry) => lineSignature(entry) === signature,
+    );
+
+    if (existing) {
+      if (existing.quantity + newLine.quantity > 99) {
+        errorBox.textContent = "A quantidade máxima por item é 99.";
+        errorBox.hidden = false;
+        return;
+      }
+      existing.quantity += newLine.quantity;
+      existing.lineTotal = computeCartLineTotal(existing);
+    } else {
+      state.editor.cart.push(newLine);
+    }
+  }
+
+  state.editor.dirty = true;
+  closeItemModal();
+  renderCart();
+  $("#order-error").hidden = true;
+}
+
+function closeItemModal() {
+  hideModal("item-modal");
+  state.itemEditor = null;
+}
+
 function handleCartClick(event) {
-  const row = event.target.closest("[data-cart-product]");
+  const row = event.target.closest("[data-cart-line]");
   if (!row) return;
 
-  const productId = row.dataset.cartProduct;
-  const item = state.editor.cart.find((entry) => entry.productId === productId);
+  const lineId = row.dataset.cartLine;
+  const item = state.editor.cart.find((entry) => entry.lineId === lineId);
   if (!item) return;
+
+  if (event.target.closest("[data-cart-edit]")) {
+    openItemModal(item.productId, { lineId: item.lineId });
+    return;
+  }
 
   if (event.target.closest("[data-cart-plus]")) {
     if (item.quantity >= 99) {
-      toast("A quantidade máxima por produto é 99.", "info");
+      toast("A quantidade máxima por item é 99.", "info");
       return;
     }
     item.quantity += 1;
   } else if (event.target.closest("[data-cart-minus]")) {
     if (item.quantity <= 1) {
-      state.editor = { ...state.editor, cart: state.editor.cart.filter((entry) => entry !== item) };
+      state.editor.cart = state.editor.cart.filter((entry) => entry !== item);
     } else {
       item.quantity -= 1;
     }
   } else if (event.target.closest("[data-cart-remove]")) {
-    state.editor = {
-      ...state.editor,
-      cart: state.editor.cart.filter((entry) => entry !== item),
-    };
+    state.editor.cart = state.editor.cart.filter((entry) => entry !== item);
   } else {
     return;
   }
 
+  if (item.quantity > 0) {
+    item.lineTotal = computeCartLineTotal(item);
+  }
   state.editor.dirty = true;
   renderCart();
 }
@@ -1017,11 +1313,13 @@ async function handleSaveOrder(event) {
   const name = $("#customer-name").value.trim();
   const locationType = state.editor.locationType;
   const locationValue = $("#location-value").value.trim();
+  const vehicleValue = $("#vehicle").value.trim();
   const cart = state.editor.cart;
 
   clearOrderError();
   $("#customer-name").classList.remove("invalid");
   $("#location-value").classList.remove("invalid");
+  $("#vehicle").classList.remove("invalid");
 
   if (name.length < 2) {
     $("#customer-name").classList.add("invalid");
@@ -1041,6 +1339,13 @@ async function handleSaveOrder(event) {
     return;
   }
 
+  if (locationType === "placa" && !vehicleValue) {
+    $("#vehicle").classList.add("invalid");
+    $("#vehicle").focus();
+    showOrderError("Informe o modelo, marca ou cor do veículo.");
+    return;
+  }
+
   if (cart.length === 0) {
     showOrderError("Adicione pelo menos um item à comanda.");
     return;
@@ -1051,10 +1356,16 @@ async function handleSaveOrder(event) {
     location: {
       type: locationType,
       label: locationType === "balcao" ? "Balcão" : locationValue,
+      ...(locationType === "placa" ? { vehicle: vehicleValue } : {}),
     },
     items: cart.map((item) => ({
       productId: item.productId,
       quantity: item.quantity,
+      notes: item.notes || null,
+      addons: (item.addons ?? []).map((addon) => ({
+        code: addon.code,
+        quantity: addon.quantity,
+      })),
     })),
   };
 
@@ -1073,6 +1384,8 @@ async function handleSaveOrder(event) {
 
     state.editor.dirty = false;
     hideModal("order-modal");
+    hideModal("item-modal");
+    state.itemEditor = null;
 
     toast(
       editing
@@ -1146,18 +1459,31 @@ function renderDrawer(order) {
   const paymentInfo = payment ? PAYMENTS[payment.method] : null;
 
   const itemsHtml = order.items
-    .map(
-      (item) => `
+    .map((item) => {
+      const addonsHtml = (item.addons ?? [])
+        .map(
+          (addon) =>
+            `<span>+ ${addon.quantity > 1 ? `${addon.quantity}× ` : ""}${esc(addon.name)} (${money(addon.lineTotal)})</span>`,
+        )
+        .join("");
+
+      const extras = `
+        ${addonsHtml}
+        ${item.notes ? `<span class="detail-note">Obs.: ${esc(item.notes)}</span>` : ""}
+      `;
+
+      return `
         <div class="detail-item">
           <span class="detail-qty">${item.quantity}×</span>
           <div class="detail-item-info">
             <strong>${esc(item.name)}</strong>
             <small>${money(item.unitPrice)} cada</small>
+            ${extras.trim() ? `<div class="detail-item-extras">${extras}</div>` : ""}
           </div>
           <span class="detail-item-price">${money(item.lineTotal)}</span>
         </div>
-      `,
-    )
+      `;
+    })
     .join("");
 
   const paymentHtml =
@@ -1306,17 +1632,30 @@ function historyMeta(entry) {
     case "item_added":
       return {
         title: "Item adicionado",
-        detail: `${details.quantityAdded ?? 1}× ${details.productName ?? "Produto"}`,
+        detail: `${details.quantityAdded ?? 1}× ${details.productName ?? "Produto"}${
+          details.notes ? ` · ${details.notes}` : ""
+        }${details.addons?.length ? " · com adicionais" : ""}`,
       };
-    case "item_updated":
+    case "item_updated": {
+      const parts = [];
+      if (details.quantityBefore !== details.quantityAfter) {
+        parts.push(`${details.quantityBefore} → ${details.quantityAfter} un.`);
+      }
+      if (details.notesAfter) parts.push(`Obs.: ${details.notesAfter}`);
+      if (details.addonsAfter?.length) parts.push("com adicionais");
       return {
-        title: "Quantidade alterada",
-        detail: `${details.productName ?? "Produto"}: ${details.quantityBefore} → ${details.quantityAfter}`,
+        title: "Item alterado",
+        detail: parts.length
+          ? `${details.productName ?? "Produto"} · ${parts.join(" · ")}`
+          : `${details.productName ?? "Produto"} atualizado`,
       };
+    }
     case "item_removed":
       return {
         title: "Item removido",
-        detail: `${details.quantity ?? 1}× ${details.productName ?? "Produto"}`,
+        detail: `${details.quantity ?? 1}× ${details.productName ?? "Produto"}${
+          details.notes ? ` · ${details.notes}` : ""
+        }`,
       };
     case "finalized":
       return {
@@ -1509,6 +1848,11 @@ function bindEvents() {
     event.target.classList.remove("invalid");
   });
 
+  $("#vehicle").addEventListener("input", (event) => {
+    state.editor.dirty = true;
+    event.target.classList.remove("invalid");
+  });
+
   $("#location-toggle").addEventListener("click", (event) => {
     const button = event.target.closest("[data-location]");
     if (!button) return;
@@ -1539,10 +1883,35 @@ function bindEvents() {
   $("#editor-products").addEventListener("click", (event) => {
     const button = event.target.closest("[data-add-editor-product]");
     if (!button || button.disabled) return;
-    addProductToCart(button.dataset.addEditorProduct);
+    openItemModal(button.dataset.addEditorProduct);
   });
 
   $("#cart-items").addEventListener("click", handleCartClick);
+
+  $$("[data-close-item]").forEach((element) => {
+    element.addEventListener("click", closeItemModal);
+  });
+
+  $("#item-qty-minus").addEventListener("click", () => changeItemQuantity(-1));
+  $("#item-qty-plus").addEventListener("click", () => changeItemQuantity(1));
+
+  $("#item-addons-list").addEventListener("click", (event) => {
+    const plus = event.target.closest("[data-addon-plus]");
+    if (plus) {
+      changeItemAddon(plus.dataset.addonPlus, 1);
+      return;
+    }
+    const minus = event.target.closest("[data-addon-minus]");
+    if (minus) {
+      changeItemAddon(minus.dataset.addonMinus, -1);
+    }
+  });
+
+  $("#item-notes").addEventListener("input", (event) => {
+    event.target.classList.remove("invalid");
+  });
+
+  $("#save-item-btn").addEventListener("click", saveItemEditor);
 
   $("#order-drawer").addEventListener("click", (event) => {
     if (event.target.closest("[data-close-drawer]")) closeDrawer();
@@ -1594,6 +1963,10 @@ function bindEvents() {
 
     if (isModalOpen("confirm-modal")) {
       resolveConfirm(false);
+      return;
+    }
+    if (isModalOpen("item-modal")) {
+      closeItemModal();
       return;
     }
     if (isModalOpen("finalize-modal")) {

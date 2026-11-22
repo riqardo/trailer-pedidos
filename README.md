@@ -56,8 +56,11 @@ Um PDV (ponto de venda) simples para o trailer:
 - O atendente entra com usuário e senha.
 - Consulta o cardápio com preços e disponibilidade.
 - Registra pedidos informando **nome do cliente** e **local** (mesa, placa ou balcão).
+- Em pedidos na placa, registra também **modelo/marca/cor do veículo** para facilitar a entrega.
+- Personaliza cada item com **observações** (ex.: sem cebola) e **adicionais pagos**
+  (extra salsicha, extra cheddar, extra bacon, ovo frito).
 - Adiciona, altera a quantidade e remove itens enquanto o pedido está aberto.
-- Consulta os pedidos registrados por status, nome, local ou número.
+- Consulta os pedidos registrados por status, nome, local, veículo ou número.
 - Finaliza o pedido escolhendo **dinheiro, Pix ou cartão**, com cálculo automático do total
   (e 10% de desconto para dinheiro).
 - Depois de finalizado, o pedido vira somente leitura, com recibo e histórico.
@@ -168,6 +171,7 @@ executar `npm start` novamente.
 | `http://localhost:3000/api/health` | Verificação de disponibilidade da API               |
 | `http://localhost:3000/api/auth/login` | Login (POST)                                    |
 | `http://localhost:3000/api/products` | Consulta ao cardápio (GET, autenticado)          |
+| `http://localhost:3000/api/addons` | Consulta aos adicionais disponíveis (GET, autenticado) |
 | `http://localhost:3000/api/orders` | Listagem e registro de pedidos (GET/POST)            |
 
 ---
@@ -204,14 +208,28 @@ Na tela de login, os três usuários aparecem como atalhos: basta clicar para en
 > A **Água Mineral** está intencionalmente indisponível para demonstrar a regra de que
 > produtos indisponíveis não podem ser adicionados (nem pelo cardápio, nem pela API).
 
+### Adicionais disponíveis
+
+Os adicionais podem ser incluídos em qualquer item da categoria **lanche**, com cobrança por
+unidade. Observações como "sem cebola" são livres e não alteram o preço.
+
+| Código           | Adicional        | Preço por unidade |
+| ---------------- | ---------------- | ----------------- |
+| `extra_salsicha` | Extra salsicha   | R$ 4,00           |
+| `extra_cheddar`  | Extra cheddar    | R$ 3,50           |
+| `extra_bacon`    | Extra bacon      | R$ 4,50           |
+| `ovo_frito`      | Ovo frito        | R$ 2,50           |
+
 ### Pedidos de demonstração
 
 | Pedido   | Cliente       | Local       | Itens                                              | Status      | Total    |
 | -------- | ------------- | ----------- | -------------------------------------------------- | ----------- | -------- |
-| `#0001`  | Seu Joaquim   | Mesa 4      | 2× Hot Dog Completo, 1× Refrigerante               | Em aberto   | R$ 45,80 |
-| `#0002`  | Marina Alves  | Placa ABC-1D23 | 1× Cheddar Bacon, 1× Batata Frita, 1× Suco       | Finalizado em dinheiro | R$ 44,82 |
+| `#0001`  | Seu Joaquim   | Mesa 4      | 2× Hot Dog Completo (sem cebola), 1× Refrigerante  | Em aberto   | R$ 45,80 |
+| `#0002`  | Marina Alves  | Placa ABC-1D23 · Fiat Uno prata | 1× Cheddar Bacon, 1× Batata Frita, 1× Suco | Finalizado em dinheiro | R$ 44,82 |
 
-O pedido `#0002` demonstra o desconto de 10%: subtotal de R$ 49,80 → **R$ 44,82**.
+O pedido `#0001` demonstra uma observação por item. O pedido `#0002` demonstra o desconto de
+10%: subtotal de R$ 49,80 → **R$ 44,82**. O valor dos adicionais entra no subtotal e,
+consequentemente, no cálculo do desconto.
 
 ---
 
@@ -224,15 +242,18 @@ O pedido `#0002` demonstra o desconto de 10%: subtotal de R$ 49,80 → **R$ 44,8
 | 3 | Um pedido só pode ser finalizado se possuir pelo menos um produto.    | A finalização retorna `422 VALIDATION_ERROR` para pedido vazio. A interface não permite salvar comanda vazia. |
 | 4 | Pedido só é finalizado após o pagamento.                               | O status só muda para `finalized` dentro do endpoint `/finalize`, que registra o pagamento simulado (`payment.simulated = true`) na mesma operação. Não existe endpoint para finalizar sem pagamento. |
 | 5 | Pedidos abertos podem ser alterados; finalizados são somente leitura. | Todas as rotas de alteração verificam `status === "open"` e retornam `409 ORDER_FINALIZED`. A interface esconde as ações de edição em pedidos finalizados. |
-| 6 | Todo pedido exige nome do cliente e local (mesa, placa ou balcão).    | Validação de `customerName` (2–80 caracteres) e `location.type` (`mesa`, `placa`, `balcao`); mesa/placa exigem identificação. Balcão é normalizado para `"Balcão"`. |
+| 6 | Todo pedido exige nome do cliente e local (mesa, placa ou balcão).    | Validação de `customerName` (2–80 caracteres) e `location.type` (`mesa`, `placa`, `balcao`). Mesa exige o número; **placa exige a identificação e o modelo/marca/cor do veículo**; balcão é normalizado para `"Balcão"`. |
 | 7 | Toda consulta ou alteração de pedido registra o atendente.            | Todas as rotas de pedidos exigem JWT. Consultas individuais e listagens gravam em `AuditLog` e no `history` do pedido; criação, edição, itens e finalização também registram o atendente. O histórico pode ser visto no detalhe do pedido. |
 
 Detalhes importantes da implementação:
 
 - **Valores em centavos**: preços e totais são calculados com aritmética de centavos para
   evitar erros de arredondamento de ponto flutuante.
-- **Snapshot dos itens**: nome, categoria e preço unitário são gravados no pedido no momento
-  em que o item é incluído, preservando o histórico mesmo se o cardápio mudar.
+- **Snapshot dos itens**: nome, categoria, preço unitário, observação e adicionais são
+  gravados no pedido no momento em que o item é incluído, preservando o histórico mesmo se o
+  cardápio ou a tabela de adicionais mudar.
+- **Personalização por linha**: a mesma combinação de produto + observação + adicionais é
+  agrupada; combinações diferentes geram linhas separadas, cada uma com seu próprio total.
 - **Auditoria**: além do histórico visível no pedido, a coleção `AuditLog` registra eventos
   como `orders.listed`, `order.viewed`, `order.updated`, `order.item_added` e
   `order.finalized`, sempre com o atendente autenticado.
@@ -263,11 +284,22 @@ Também é possível filtrar por **Lanches** ou **Bebidas** e pesquisar pelo nom
 2. Informe o **nome do cliente** (obrigatório, 2 a 80 caracteres).
 3. Escolha o local: **Mesa**, **Placa** ou **Balcão**.
    - Mesa: informe o número (ex.: `4`).
-   - Placa: informe a identificação (ex.: `ABC-1D23`).
+   - Placa: informe a identificação (ex.: `ABC-1D23`) **e o modelo/marca/cor do veículo**
+     (ex.: `Fiat Uno prata`). Os dois campos são obrigatórios.
    - Balcão: usado para quem aguarda em pé; não precisa de identificação.
-4. Adicione produtos pela lista; use `+` e `−` para ajustar quantidades e a lixeira para
-   remover um item.
-5. Confira o subtotal e o total na comanda e clique em **Registrar pedido**.
+4. Toque em um produto para abrir a personalização:
+   - ajuste a **quantidade**;
+   - informe uma **observação** (ex.: `sem cebola`, `sem vinagrete`);
+   - inclua **adicionais** pagos, como extra salsicha, extra cheddar, extra bacon ou ovo frito
+     (apenas para lanches);
+   - confira o **total do item** e clique em **Adicionar à comanda**.
+5. Na comanda, use o lápis para editar observação/adicionais de uma linha, `+`/`−` para a
+   quantidade e a lixeira para remover.
+6. Confira o subtotal e o total e clique em **Registrar pedido**.
+
+Itens com a mesma combinação de produto, observação e adicionais são agrupados. Combinações
+diferentes do mesmo produto viram **linhas separadas** na comanda (ex.: um hot dog sem cebola
+e outro com extra cheddar).
 
 Um pedido é criado em aberto e recebe um número sequencial (ex.: `#0003`). O atendente
 autenticado fica registrado como criador.
@@ -283,7 +315,7 @@ finalizados. Tentativas de alteração pela API retornam `409 ORDER_FINALIZED`.
 A tela **Pedidos** lista as comandas e permite:
 
 - alternar entre **Abertos**, **Finalizados** e **Todos**;
-- buscar por nome do cliente, mesa, placa ou número do pedido;
+- buscar por nome do cliente, mesa, placa, veículo ou número do pedido;
 - abrir o detalhe de qualquer pedido;
 - acompanhar os indicadores de pedidos abertos, finalizados e faturamento do dia.
 
@@ -310,8 +342,8 @@ horário. A API também grava esses eventos na coleção `AuditLog`.
 ### Fluxo resumido
 
 1. Entrar com `ana` / `ana123`.
-2. **Novo pedido** → nome + mesa/placa/balcão.
-3. Adicionar produtos e ajustar quantidades.
+2. **Novo pedido** → nome + mesa/placa/balcão (placa exige veículo).
+3. Adicionar produtos, definir quantidade, observação e adicionais.
 4. **Registrar pedido**.
 5. Abrir o pedido → **Finalizar e receber**.
 6. Escolher a forma de pagamento e confirmar.
@@ -342,13 +374,14 @@ protegidas retornam `401 UNAUTHORIZED`.
 | `POST` | `/api/auth/login`                         | Login do atendente e emissão do JWT              |
 | `GET`  | `/api/auth/me`                            | Atendente autenticado                            |
 | `GET`  | `/api/products`                           | Lista o cardápio (`available`, `category`)       |
+| `GET`  | `/api/addons`                             | Lista os adicionais disponíveis e seus preços    |
 | `GET`  | `/api/orders`                             | Lista pedidos (`status`, `search`, `locationType`, `page`, `limit`) |
-| `POST` | `/api/orders`                             | Registra pedido em aberto                        |
+| `POST` | `/api/orders`                             | Registra pedido em aberto (itens com observação e adicionais) |
 | `GET`  | `/api/orders/{id}`                        | Detalha pedido e registra a consulta             |
 | `PATCH`| `/api/orders/{id}`                        | Altera cliente, local e/ou itens (somente aberto)|
-| `POST` | `/api/orders/{id}/items`                  | Adiciona item ao pedido                          |
-| `PATCH`| `/api/orders/{id}/items/{productId}`      | Altera a quantidade de um item                   |
-| `DELETE`| `/api/orders/{id}/items/{productId}`     | Remove um item do pedido                         |
+| `POST` | `/api/orders/{id}/items`                  | Adiciona item com observação e adicionais        |
+| `PATCH`| `/api/orders/{id}/items/{itemId}`         | Altera quantidade, observação e/ou adicionais    |
+| `DELETE`| `/api/orders/{id}/items/{itemId}`        | Remove uma linha do pedido                       |
 | `POST` | `/api/orders/{id}/finalize`               | Registra o pagamento e finaliza o pedido         |
 
 ### Exemplo rápido com curl
@@ -359,15 +392,24 @@ curl -X POST http://localhost:3000/api/auth/login \
   -H "Content-Type: application/json" \
   -d "{\"username\":\"ana\",\"password\":\"ana123\"}"
 
-# Consultar cardápio (troque <TOKEN> pelo token retornado)
+# Consultar cardápio e adicionais (troque <TOKEN> pelo token retornado)
 curl http://localhost:3000/api/products \
   -H "Authorization: Bearer <TOKEN>"
 
-# Registrar um pedido
+curl http://localhost:3000/api/addons \
+  -H "Authorization: Bearer <TOKEN>"
+
+# Registrar um pedido em placa, com observação e adicionais
 curl -X POST http://localhost:3000/api/orders \
   -H "Authorization: Bearer <TOKEN>" \
   -H "Content-Type: application/json" \
-  -d "{\"customerName\":\"Maria\",\"location\":{\"type\":\"mesa\",\"label\":\"7\"},\"items\":[{\"productId\":\"<ID_DO_PRODUTO>\",\"quantity\":2}]}"
+  -d "{\"customerName\":\"Maria\",\"location\":{\"type\":\"placa\",\"label\":\"ABC-1D23\",\"vehicle\":\"Fiat Uno prata\"},\"items\":[{\"productId\":\"<ID_DO_PRODUTO>\",\"quantity\":2,\"notes\":\"Sem cebola\",\"addons\":[{\"code\":\"extra_cheddar\",\"quantity\":1}]}]}"
+
+# Alterar observação/adicionais de uma linha do pedido
+curl -X PATCH http://localhost:3000/api/orders/<ID_DO_PEDIDO>/items/<ID_DO_ITEM> \
+  -H "Authorization: Bearer <TOKEN>" \
+  -H "Content-Type: application/json" \
+  -d "{\"notes\":\"Sem cebola e sem vinagrete\",\"addons\":[{\"code\":\"extra_bacon\",\"quantity\":1}]}"
 
 # Finalizar em dinheiro (10% de desconto)
 curl -X POST http://localhost:3000/api/orders/<ID_DO_PEDIDO>/finalize \
@@ -386,6 +428,7 @@ trailer-pedidos/
 │   └── openapi.yaml          # Especificação OpenAPI 3.0
 ├── public/
 │   ├── index.html            # Interface (SPA sem build)
+│   ├── favicon.svg
 │   ├── css/styles.css        # Estilos
 │   └── js/
 │       ├── api.js            # Cliente HTTP da API
@@ -394,13 +437,14 @@ trailer-pedidos/
 │   ├── app.js                # Configuração do Express e Swagger
 │   ├── config.js             # Variáveis de ambiente
 │   ├── db.js                 # MongoDB em memória
+│   ├── data/addons.js        # Catálogo e preços dos adicionais
 │   ├── seed.js               # Dados de teste
 │   ├── middleware/
 │   │   ├── auth.js           # Validação do JWT
 │   │   └── error.js          # Tratamento de erros/404
 │   ├── models/               # User, Product, Order, AuditLog, Counter
-│   ├── routes/               # auth, products, orders
-│   ├── services/orders.js    # Regras de negócio dos pedidos
+│   ├── routes/               # auth, products, addons, orders
+│   ├── services/orders.js    # Regras de negócio e personalização dos pedidos
 │   └── utils/                # Dinheiro, erros HTTP e serializadores
 ├── server.js                 # Bootstrap da aplicação
 ├── .env.example

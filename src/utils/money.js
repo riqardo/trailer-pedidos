@@ -10,7 +10,7 @@ export function fromCents(cents) {
 
 export function calculateTotals(items, paymentMethod = null) {
   const subtotalCents = items.reduce(
-    (sum, item) => sum + toCents(item.unitPrice) * item.quantity,
+    (sum, item) => sum + toCents(item.lineTotal),
     0,
   );
 
